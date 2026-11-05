@@ -31,7 +31,7 @@
 //! thread and reports no thread count.
 
 use {
-    super::{Engine, EngineError, Unsupported},
+    super::{indexed_relations, Engine, EngineError, Unsupported},
     crate::db::{Catalog, Prepared},
     kermit_algos::IndexSpec,
     kermit_ds::{Filter, TupleView, Tuples},
@@ -52,7 +52,7 @@ use {
     },
     std::{
         cell::{Cell, RefCell},
-        collections::{btree_map::Entry, BTreeMap},
+        collections::BTreeMap,
         fmt,
         sync::{Arc, Mutex, MutexGuard, PoisonError},
     },
@@ -70,13 +70,8 @@ pub const NEMO_PHYSICAL_VERSION: &str = "0.10.2-dev";
 /// errors.
 const ENGINE: &str = "nemo";
 
-/// An error of this engine.
-fn failure(message: impl fmt::Display) -> EngineError {
-    EngineError {
-        engine: ENGINE,
-        message: message.to_string(),
-    }
-}
+/// An error of this engine, its message as written.
+fn error(message: impl fmt::Display) -> EngineError { EngineError::new(ENGINE, message) }
 
 /// Held across every call into `nemo-physical` that times itself.
 ///
@@ -170,13 +165,11 @@ impl Engine for Nemo {
         _settings: &(), catalog: &Catalog, prepared: &Prepared,
     ) -> Result<NemoLoaded, EngineError> {
         let mut relations = BTreeMap::new();
-        for spec in prepared.indexes() {
-            if let Entry::Vacant(slot) = relations.entry(spec.relation.clone()) {
-                let tuples = catalog.shared_tuples(&spec.relation).ok_or_else(|| {
-                    failure(format!("the catalog holds no relation {}", spec.relation))
-                })?;
-                slot.insert(tuples);
-            }
+        for relation in indexed_relations(prepared) {
+            let tuples = catalog
+                .shared_tuples(relation)
+                .ok_or_else(|| error(format!("the catalog holds no relation {relation}")))?;
+            relations.insert(relation.to_string(), tuples);
         }
         Ok(NemoLoaded {
             relations,
@@ -192,7 +185,7 @@ impl Engine for Nemo {
         Self: 'l,
     {
         if prepared.indexes().is_empty() {
-            return Err(failure("a query of constant checks has no join to run"));
+            return Err(error("a query of constant checks has no join to run"));
         }
         let markers = plan_markers(prepared)?;
         let mut database = DatabaseInstance::default();
@@ -201,7 +194,7 @@ impl Engine for Nemo {
             let tuples = loaded
                 .relations
                 .get(&spec.relation)
-                .ok_or_else(|| failure(format!("relation {} was not loaded", spec.relation)))?;
+                .ok_or_else(|| error(format!("relation {} was not loaded", spec.relation)))?;
             let table = database.register_table(&format!("idx_{index}"), spec.columns.len());
             let provider = ViewProvider::new(Arc::clone(tuples), spec);
             database.add_source_external(table, ColumnOrder::default(), Box::new(provider));
@@ -217,7 +210,7 @@ impl Engine for Nemo {
                 futures::executor::block_on(
                     database.load_trie_into_memory(table, ColumnOrder::default()),
                 )
-                .map_err(failure)?;
+                .map_err(error)?;
             }
         }
         let (plan, output) = join_plan(&markers, &tables);
@@ -233,7 +226,7 @@ impl Engine for Nemo {
 
     /// Nemo's streaming join is private upstream, so there is none to offer.
     fn stream(_built: &NemoBuilt) -> Result<u64, EngineError> {
-        Err(failure(
+        Err(error(
             "Nemo has no streamed join (STREAMS is false); use materialize",
         ))
     }
@@ -278,9 +271,7 @@ impl Engine for Nemo {
             return Ok(Vec::new());
         };
         let database = built.database.borrow();
-        let stored = database
-            .table_row_iterator_inmemory(table)
-            .map_err(failure)?;
+        let stored = database.table_row_iterator_inmemory(table).map_err(error)?;
         stored
             .map(|values| -> Result<Vec<usize>, EngineError> {
                 let plan_row = values
@@ -314,7 +305,7 @@ impl NemoBuilt {
         let results = {
             let _exclusive = exclusive();
             futures::executor::block_on(self.database.borrow_mut().execute_plan(plan))
-                .map_err(failure)?
+                .map_err(error)?
         };
         let outcome = match results.get(&self.output) {
             | Some(&table) => Outcome::Table(table),
@@ -366,7 +357,7 @@ fn plan_markers(prepared: &Prepared) -> Result<PlanMarkers, EngineError> {
         let mut markers = Vec::with_capacity(atom.terms.len());
         for term in &atom.terms {
             let Term::Var(name) = term else {
-                return Err(failure(format!(
+                return Err(error(format!(
                     "atom {atom} holds {term}, which is not a variable"
                 )));
             };
@@ -374,13 +365,13 @@ fn plan_markers(prepared: &Prepared) -> Result<PlanMarkers, EngineError> {
                 .iter()
                 .position(|bound| bound == name)
                 .ok_or_else(|| {
-                    failure(format!("variable {name} of atom {atom} is not in the plan"))
+                    error(format!("variable {name} of atom {atom} is not in the plan"))
                 })?;
             markers.push(position);
         }
         let columns = prepared.indexes()[index].columns.len();
         if markers.len() != columns || !markers.windows(2).all(|pair| pair[0] < pair[1]) {
-            return Err(failure(format!(
+            return Err(error(format!(
                 "atom {atom} does not list its {columns} variables in plan order"
             )));
         }
@@ -441,7 +432,7 @@ fn integer(value: &AnyDataValue) -> Result<usize, EngineError> {
                 .flatten()
         })
         .and_then(|id| usize::try_from(id).ok())
-        .ok_or_else(|| failure(format!("result value {value:?} is not an id")))
+        .ok_or_else(|| error(format!("result value {value:?} is not an id")))
 }
 
 /// One index spec's view of a relation, written into Nemo's loader as unsigned

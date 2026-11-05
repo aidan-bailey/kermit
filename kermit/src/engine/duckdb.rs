@@ -25,6 +25,7 @@
 
 use {
     super::{
+        indexed_relations,
         sql::{
             column, create_spec_table, join_select, relation_table, relation_table_name, spec_table,
         },
@@ -96,7 +97,7 @@ impl SpillDirectory {
         let path =
             std::env::temp_dir().join(format!("kermit-duckdb-{}-{sequence}", std::process::id()));
         fs::create_dir(&path).map_err(|e| {
-            failure(
+            failed(
                 &format!("creating the spill directory {}", path.display()),
                 e,
             )
@@ -109,7 +110,7 @@ impl SpillDirectory {
     /// The path as the text of a SQL statement, which must be valid UTF-8.
     fn text(&self) -> Result<&str, EngineError> {
         self.path.to_str().ok_or_else(|| {
-            refusal(format!(
+            error(format!(
                 "the spill directory {} is not valid UTF-8",
                 self.path.display()
             ))
@@ -181,34 +182,14 @@ impl Drop for Tables<'_> {
     }
 }
 
-/// An error of this engine, with the step that failed.
-fn failure(context: &str, source: impl Display) -> EngineError {
-    refusal(format!("{context}: {source}"))
-}
+/// An error of this engine, its message as written.
+fn error(message: impl Display) -> EngineError { EngineError::new(DuckDb::NAME, message) }
 
-/// An error of this engine with its message as written.
-fn refusal(message: String) -> EngineError {
-    EngineError {
-        engine: DuckDb::NAME,
-        message,
-    }
-}
+/// An error of this engine: the step that failed, and DuckDB's own message.
+fn failed(step: &str, source: impl Display) -> EngineError { error(format!("{step}: {source}")) }
 
 /// `text` as a single-quoted SQL string literal.
 fn string_literal(text: &str) -> String { format!("'{}'", text.replace('\'', "''")) }
-
-/// The relations the query's indexes read, each once, in index order. A
-/// relation only an all-constant atom reads is counted from the catalog by
-/// `check_multiplicity`, never by DuckDB.
-fn indexed_relations(prepared: &Prepared) -> Vec<&str> {
-    let mut names: Vec<&str> = Vec::new();
-    for spec in prepared.indexes() {
-        if !names.contains(&spec.relation.as_str()) {
-            names.push(&spec.relation);
-        }
-    }
-    names
-}
 
 /// Creates `relation`'s base table, `UBIGINT` columns `c0…`, and appends the
 /// catalog's rows.
@@ -225,18 +206,18 @@ fn load_relation(
             relation_table(relation),
             columns.join(", ")
         ))
-        .map_err(|e| failure(&context("creating the table of"), e))?;
+        .map_err(|e| failed(&context("creating the table of"), e))?;
     let mut appender = connection
         .appender(&relation_table_name(relation))
-        .map_err(|e| failure(&context("opening an appender on"), e))?;
+        .map_err(|e| failed(&context("opening an appender on"), e))?;
     for row in tuples.rows() {
         appender
             .append_row(appender_params_from_iter(row.iter()))
-            .map_err(|e| failure(&context("loading"), e))?;
+            .map_err(|e| failed(&context("loading"), e))?;
     }
     appender
         .flush()
-        .map_err(|e| failure(&context("flushing"), e))
+        .map_err(|e| failed(&context("flushing"), e))
 }
 
 /// The schema of a join's result: `width` `UInt64` columns.
@@ -253,7 +234,7 @@ fn collect_rows(built: &DuckDbBuilt<'_>) -> Result<Tuples, EngineError> {
     let mut statement = built.statement.borrow_mut();
     let batches = statement
         .stream_arrow([], built.schema.clone())
-        .map_err(|e| failure("running the join", e))?;
+        .map_err(|e| failed("running the join", e))?;
     let mut rows = Tuples::new(built.width);
     let mut row = vec![0usize; built.width];
     for batch in batches {
@@ -302,14 +283,14 @@ impl Engine for DuckDb {
         settings: &DuckDbSettings, catalog: &Catalog, prepared: &Prepared,
     ) -> Result<DuckDbLoaded, EngineError> {
         if settings.threads == 0 {
-            return Err(refusal("the thread count must be at least 1".to_string()));
+            return Err(error("the thread count must be at least 1".to_string()));
         }
         // Declared before the connection, so that on every return the
         // connection drops first and closes the database before its spill
         // directory is removed.
         let spill = SpillDirectory::create()?;
-        let connection = Connection::open_in_memory()
-            .map_err(|e| failure("opening an in-memory database", e))?;
+        let connection =
+            Connection::open_in_memory().map_err(|e| failed("opening an in-memory database", e))?;
         connection
             .execute_batch(&format!(
                 "PRAGMA threads = {}; SET memory_limit = '{MEMORY_LIMIT}'; SET temp_directory = \
@@ -317,18 +298,18 @@ impl Engine for DuckDb {
                 settings.threads,
                 string_literal(spill.text()?),
             ))
-            .map_err(|e| failure("configuring the connection", e))?;
+            .map_err(|e| failed("configuring the connection", e))?;
         for relation in indexed_relations(prepared) {
             let tuples = catalog
                 .tuples(relation)
-                .ok_or_else(|| refusal(format!("the catalog holds no relation `{relation}`")))?;
+                .ok_or_else(|| error(format!("the catalog holds no relation `{relation}`")))?;
             load_relation(&connection, relation, tuples)?;
         }
         let version = connection
             .query_row("SELECT library_version FROM pragma_version()", [], |row| {
                 row.get::<_, String>(0)
             })
-            .map_err(|e| failure("reading the library version", e))?;
+            .map_err(|e| failed("reading the library version", e))?;
         Ok(DuckDbLoaded {
             connection,
             builds: Cell::new(0),
@@ -354,14 +335,14 @@ impl Engine for DuckDb {
             loaded
                 .connection
                 .execute_batch(&create_spec_table(spec, index, build))
-                .map_err(|e| failure(&format!("building the table of index #{index}"), e))?;
+                .map_err(|e| failed(&format!("building the table of index #{index}"), e))?;
         }
         // The last step of the build (decision 11): `stream` then never
         // includes planning.
         let statement = loaded
             .connection
             .prepare(&join_select(prepared, build))
-            .map_err(|e| failure("preparing the join", e))?;
+            .map_err(|e| failed("preparing the join", e))?;
         let width = prepared.assignment_width();
         Ok(DuckDbBuilt {
             statement: RefCell::new(statement),
@@ -375,7 +356,7 @@ impl Engine for DuckDb {
         let mut statement = built.statement.borrow_mut();
         let batches = statement
             .stream_arrow([], built.schema.clone())
-            .map_err(|e| failure("running the join", e))?;
+            .map_err(|e| failed("running the join", e))?;
         Ok(batches.map(|batch| batch.num_rows() as u64).sum())
     }
 

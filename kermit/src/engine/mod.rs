@@ -159,6 +159,30 @@ pub struct EngineError {
     pub message: String,
 }
 
+impl EngineError {
+    /// An error of `engine` (its [`Engine::NAME`]), in the engine's own words.
+    pub fn new(engine: &'static str, message: impl fmt::Display) -> Self {
+        EngineError {
+            engine,
+            message: message.to_string(),
+        }
+    }
+}
+
+/// The relations `prepared`'s indexes read, each once, in index order: what an
+/// engine's `load` puts inside it. A relation that only an all-constant atom
+/// reads is not among them, since the lifecycle's `check_multiplicity` counts
+/// it from the catalog.
+pub fn indexed_relations(prepared: &Prepared) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for spec in prepared.indexes() {
+        if !names.contains(&spec.relation.as_str()) {
+            names.push(&spec.relation);
+        }
+    }
+    names
+}
+
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.engine, self.message)
@@ -283,6 +307,37 @@ mod tests {
         assert_eq!(error.to_string(), "relation-names: cannot materialize");
         let boxed: Box<dyn std::error::Error> = Box::new(error);
         assert!(boxed.source().is_none());
+    }
+
+    #[test]
+    fn an_engine_error_is_made_from_any_message() {
+        let error = EngineError::new("duckdb", format_args!("step {}", 3));
+        assert_eq!(error.engine, "duckdb");
+        assert_eq!(error.to_string(), "duckdb: step 3");
+    }
+
+    /// Two indexes read `r` (one filtered by its constant), one reads `s`, and
+    /// `t` is read only by an all-constant atom: a check, which the lifecycle
+    /// counts from the catalog, so no engine loads it.
+    #[test]
+    fn the_indexed_relations_are_each_listed_once_without_the_checks() {
+        let relation = |name: &str| {
+            let mut tuples = Tuples::new(2);
+            tuples.push(&[1, 2]);
+            (RelationHeader::new_positional(name, 2), tuples)
+        };
+        let catalog = Catalog::new(
+            vec![relation("r"), relation("s"), relation("t")],
+            StatisticsLevel::TupleCounts,
+        );
+        let query: JoinQuery = "Q(X, Y) :- r(X, Y), s(Y, X), r(Y, c1), t(c2, c3)."
+            .parse()
+            .expect("a well-formed query");
+        let planner = Planner::new(Box::new(LexicographicOptimiser));
+        let prepared = prepare(&catalog, &query, &planner, TrieLevels::All).expect("a valid query");
+        assert_eq!(prepared.indexes().len(), 3);
+        assert_eq!(prepared.relations(), vec!["r", "s", "t"]);
+        assert_eq!(indexed_relations(&prepared), vec!["r", "s"]);
     }
 
     #[test]
