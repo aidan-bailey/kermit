@@ -19,8 +19,9 @@ variable of the executed query), from the same `Prepared` the structure cells ru
 | `materialize` | … | yes | … |
 | `space` | … or "not reported" | exact | … |
 
-State the `Engine` constants: `NAME` (the `system` axis), `STREAMS`, `KEEPS_DUPLICATES`,
-`MATERIALIZE_MUTATES`, `HAS_SPACE`.
+State the engine's capabilities (its `EngineKind` variant's `capabilities()`, which its
+`Engine::CAPABILITIES` is): `name` (the `system` axis, the `--engine` value and the feature's
+suffix), `threaded`, `streams`, `keeps_duplicates`, `materialize_mutates`, `has_space`.
 
 ## Translation
 
@@ -35,7 +36,8 @@ like with like and which do not (see `BENCHMARKING.md`, "Comparing against exter
 - which phase holds the engine's index work;
 - set or bag semantics, and what that does to counts on inputs with duplicate rows;
 - who chooses the join order;
-- threads, memory limits and anything the engine does outside kermit's timers;
+- threads, memory limits, where the engine spills (on disk, never the system's temporary
+  directory, which can be a tmpfs) and anything the engine does outside kermit's timers;
 - a query with an all-constant atom whose count is 0: the engine cell skips its build entirely there
   (the result is known to be empty) while kermit's `build` still builds every index, so say how
   that makes the engine's `build` not like-for-like;

@@ -13,14 +13,15 @@ bounded sanity baseline against an established peer, not a head-to-head claim.
 
 | Phase | What DuckDB does | Timed | Notes |
 |---|---|---|---|
-| `load` | An in-memory database, `PRAGMA threads = N`, and one table `rel_<name>` (columns `c0…`, `UBIGINT`) per relation the query reads, appended from the catalog's flat tuples | no | |
+| `load` | An in-memory database, `PRAGMA threads = N`, a private spill directory on disk, and one table `rel_<name>` (columns `c0…`, `UBIGINT`) per relation the query reads, appended from the catalog's flat tuples | no | Loaded once per query: the preflight's load is the one the describe step and every timed sample build from |
 | `build` | One `CREATE TEMP TABLE` per `IndexSpec`: the spec's filtered, projected rows from the relation table (one copy; no index exists). Then the join statement is prepared | yes | The preparation (planning, well under a millisecond on these queries) is the last step of `build`, so `iteration` excludes it and each `end_to_end` sample includes it once (decision 11) |
 | `iteration` | The prepared join over the spec tables, streamed as Arrow batches whose rows are counted | yes | DuckDB builds its hash tables here, inside the query |
-| `materialize` | The same statement, each batch's columns copied into kermit `Tuples` (row-major), then the sort and distinct count that kermit's own cells use (`kermit::db::materialize_count`) | yes, opt-in | Every sample builds nothing new: `MATERIALIZE_MUTATES` is false |
+| `materialize` | The same statement, each batch's columns copied into kermit `Tuples` (row-major), then the sort and distinct count that kermit's own cells use (`kermit::db::materialize_count`) | yes, opt-in | Every sample builds nothing new: `materialize_mutates` is false |
 | `space` | Not reported | | DuckDB keeps no index; its hash tables exist only inside a query. The note `{label} reports no space` is printed |
 
-`Engine` constants: `NAME` is `"duckdb"`, `STREAMS` true, `KEEPS_DUPLICATES` true,
-`MATERIALIZE_MUTATES` false, `HAS_SPACE` false.
+Capabilities (`EngineKind::Duckdb.capabilities()`, which `DuckDb::CAPABILITIES` is): `name` is
+`"duckdb"`, `threaded` true, `streams` true, `keeps_duplicates` true, `materialize_mutates` false,
+`has_space` false.
 
 ## Translation
 
@@ -55,6 +56,13 @@ CREATE TEMP TABLE "idx_0_5" AS SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1"
 - **Compare DuckDB with kermit on `end_to_end` only.** DuckDB's index work (its hash tables) sits in
   its `iteration`, while kermit's sits in `build`, so only the sum is the same work. `kl.engines()`
   draws exactly that pair.
+- **DuckDB's `iteration` copies every result row once more than kermit's.** The streamed count
+  converts each result chunk into Arrow arrays (`stream_arrow`), one copy per row and column, and
+  then counts the rows; kermit's `iteration` counts rows it lends without copying. The cost grows
+  with the result, not the inputs, so it is negligible on most queries but a real share of
+  `iteration` on very large results (SNAP dblp's `path3`, 1.45·10⁹ rows of 4 columns). It is not
+  measured separately, and the counting form is kept: wrapping the join in `SELECT count(*)` would
+  let DuckDB skip the columns, which no kermit cell can.
 - **DuckDB chooses its own join order.** The statement fixes the query, not the order: kermit's
   variable order is the plan of its own cells, and DuckDB's optimiser plans the joins itself.
 - **A zero all-constant count skips the engine's build.** On a query with an all-constant atom whose
@@ -64,7 +72,7 @@ CREATE TEMP TABLE "idx_0_5" AS SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1"
 - **The `plan` axis is kermit's order, DuckDB ignores it.** Engine rows carry the `plan` axis, which
   is kermit's variable order; DuckDB plans its own join order and does not follow it, so `plan` only
   says which query ran.
-- **Bag semantics.** DuckDB counts duplicate rows, as `HashTrie` does (`KEEPS_DUPLICATES`), so on
+- **Bag semantics.** DuckDB counts duplicate rows, as `HashTrie` does (`keeps_duplicates`), so on
   duplicate-free inputs its count equals kermit's and the benchmark's `expected`. On inputs with
   duplicate rows DuckDB matches `HashTrie` (bag) and not the sorted tries or Nemo (set):
   `oxford-uniform-s3`'s triangle is 7433 for `HashTrie` and DuckDB against 7430 for `TreeTrie`,
@@ -72,7 +80,8 @@ CREATE TEMP TABLE "idx_0_5" AS SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1"
 - **One thread by default** (`PRAGMA threads = 1`), the same parallelism as kermit's joins and
   serial builds. `--engine-threads N` raises it; reports carry `engine_threads`.
 - **Memory.** Every connection sets `memory_limit = '8GB'`, under the sweep's 14 GiB cap (DuckDB's
-  default is 80% of RAM), and a private spill directory.
+  default is 80% of RAM), and spills past it into a private directory on disk (see Settings and
+  limits), never the system's temporary directory, which on the sweep host is a tmpfs.
 - **Probes are single cold runs.** A probe's `build`, `iteration` and `materialize` are one run
   each: compare them with other single runs, never with a Criterion estimate.
 
@@ -104,17 +113,28 @@ To move the pin:
 
 ## Settings and limits
 
-- `DuckDbSettings { threads }`: `--engine-threads N`, default 1, range
+- `DuckDbSettings { threads, spill_parent }`. `threads` is `--engine-threads N`, default 1, range
   `1..=available_parallelism()`; outside it the error reads
   `--engine-threads must be between 1 and {available_parallelism}`.
-- `memory_limit = '8GB'` and the private spill directory `kermit-duckdb-<pid>-<n>` under the system
-  temporary directory, removed when the connection drops. DuckDB deletes every spill file in its
+- `memory_limit = '8GB'`, and a private spill directory `kermit-duckdb-<pid>-<n>` under
+  `spill_parent`, removed when the connection drops. DuckDB deletes every spill file in its
   directory on exit, so two connections sharing one would corrupt each other's spills; the JOB
   generator guards against the same hazard.
-- `--engine-threads` applies to `--engine duckdb` only: given with no DuckDB engine selected it is a
-  usage error (Nemo is single-threaded).
-- An engine cell's preflight (untimed, before the describe step) names the benchmark, the query and
-  the engine in its error. `bench join --engine` runs the 64-byte Criterion group-name clash check
+- `spill_parent` defaults to `default_spill_parent()`: `<platform cache>/kermit/duckdb.tmp`
+  (`~/.cache/kermit/duckdb.tmp` on Linux, following `XDG_CACHE_HOME`), beside the benchmark cache
+  and the JOB raw cache's own `duckdb.tmp`. Not `std::env::temp_dir()`: on the sweep host `/tmp` is
+  a 15 GiB tmpfs, so a spill there would be memory charged to the run's own memory cap, and a
+  killed run's spill would stay resident. The temporary directory is the fallback only on a
+  platform with no cache directory.
+- A process killed outright (earlyoom's SIGKILL) never removes its spill directory, so each one
+  holds a `kermit.lock`, locked while its connection lives. The OS frees a dead process's locks, so
+  making a spill directory first removes every `kermit-duckdb-*` sibling whose lock can be taken. A
+  live directory, one still being made (no lock file yet) and one of another name are never
+  touched, and a name already taken is skipped, not deleted.
+- `--engine-threads` applies to `--engine duckdb` only (the one engine whose capabilities are
+  `threaded`): given with no DuckDB engine selected it is a usage error.
+- An engine cell's preflight (untimed, inside `Cell::subject`, before the describe step) names the
+  benchmark, the query and the engine in its error. `bench join --engine` runs the 64-byte Criterion group-name clash check
   over its kermit and engine cells, as `bench run` does.
 - kermit sets no timeout of its own; the sweep harness's per-step timeout and memory cap apply. An
   engine that fails ends its cell with an error, and nothing is retried.
@@ -124,7 +144,8 @@ To move the pin:
 - `kermit/tests/engine_oracle.rs` checks DuckDB's counts and contents against the nested-loop oracle
   over the shared query shapes (`kermit/tests/common/shapes.rs`), on bag semantics.
 - Unit tests in `kermit/src/engine/sql.rs` pin the translator's statements.
-- The `engines` job of `.github/workflows/pr.yml` runs both (bundled, since CI has no Nix). The
+- The `engines` job of `.github/workflows/engines.yml` runs both (bundled, since CI has no Nix), on
+  every pull request into master and every push to it. The
   profile's gates build no cargo features, so a change to the engine is checked with
   `--features engine-duckdb`.
 

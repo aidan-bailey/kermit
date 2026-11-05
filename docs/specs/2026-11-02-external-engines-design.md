@@ -235,6 +235,8 @@ pub trait Engine {
 ```
 
 `build` takes the catalog because Nemo's providers stream from `Catalog::shared_tuples`.
+(Superseded by Amendment 1: Nemo took its handles in `load`, so `build` no longer takes the
+catalog, and the five constants and `label` are one `CAPABILITIES`.)
 
 **Errors.** Every engine method is fallible, but timed bodies cannot return an error. So
 `EngineCell` runs one fallible preflight per query, untimed and before the describe step: `load`,
@@ -258,7 +260,8 @@ cap. DuckDB's default is 80% of RAM, which this host cannot spare. Each connecti
 `SET temp_directory` to a private directory, `<std::env::temp_dir()>/kermit-duckdb-<pid>-<n>`,
 removed when the connection drops. DuckDB deletes every spill file in its temp directory on exit,
 so two connections sharing one would corrupt each other's spills, the hazard the JOB generator
-already guards against.
+already guards against. (Amendment 1 moves the directory onto disk, under
+`DuckDbSettings::spill_parent`.)
 
 ### The `Cell` refactor (`kermit/src/bench/run.rs`)
 
@@ -610,3 +613,35 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
 - `docs/specs/bench-report-schema.md`: v8.
 - `ARCHITECTURE.md`: `kermit::engine` among the `kermit` crate's modules.
 - `BENCHMARKING.md`: running engines, and which pairs compare.
+
+## Amendment 1 (2026-11-05): the audit's fixes
+
+An audit of the integration found nothing that gives a wrong answer, and the user had all of its
+findings fixed:
+
+1. **DuckDB spills on disk.** `std::env::temp_dir()` is a 15 GiB tmpfs on the sweep host, so a
+   spill past `memory_limit` was memory charged to the run's own cap, and a SIGKILLed run left it
+   resident. `DuckDbSettings::spill_parent` (default `<platform cache>/kermit/duckdb.tmp`, beside
+   the benchmark cache and the JOB raw cache's own `duckdb.tmp`) replaces it. Each spill directory
+   holds a `kermit.lock`, locked while its connection lives; making one first removes every sibling
+   whose lock can be taken (the OS frees a dead process's locks). A name already taken is skipped,
+   never deleted.
+2. **The `engines` CI job runs on pushes to master**, in its own workflow
+   (`.github/workflows/engines.yml`), since work lands on master by direct push; it is separate so
+   that Release, which follows CI, does not wait on its cold DuckDB build.
+3. **`Engine::build` takes no catalog**: neither engine read it.
+4. **The preflight keeps its load.** It runs inside `Cell::subject` (`Cell::preflight` is gone),
+   drops only its trial build, and the subject keeps the load, so each query is loaded into an
+   engine once.
+5. **Capabilities are stated once.** `kermit::engine::EngineKind` (the `--engine` `ValueEnum`,
+   formerly the binary's `EngineSelector`) gives each engine's `Capabilities`: `name`, `threaded`,
+   `streams`, `keeps_duplicates`, `materialize_mutates`, `has_space`. An `Engine` impl takes them as
+   `CAPABILITIES`, in place of `NAME`, `STREAMS`, `KEEPS_DUPLICATES`, `MATERIALIZE_MUTATES`,
+   `HAS_SPACE` and `label`; `threads` returns a `usize` (1 for an engine that takes none). The
+   binary's `EngineChoice` labels and plans from the same capabilities (`Capabilities::label`,
+   `Metric::measured_by`), so the hand-written copies and their feature-gated pin tests are gone.
+6. **DuckDB's Arrow copy is a documented caveat.** `stream` converts every result chunk into Arrow
+   arrays before counting it, a copy kermit's `iteration` does not make; `docs/engines/duckdb.md`
+   says so. It is not measured separately.
+7. **Smaller cleanups.** One `EngineError::new` and one `engine::indexed_relations` serve both
+   engines, and a unit test pins `NEMO_PHYSICAL_VERSION` (with `NEMO_REV`) against `Cargo.lock`.
