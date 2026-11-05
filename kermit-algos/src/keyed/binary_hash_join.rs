@@ -40,13 +40,14 @@ use {
 /// One level of the loop nest: a body atom, probed on the variables the
 /// atoms before it bind.
 struct Step<'a, DS> {
-    /// The atom's index. Its first `key_len` columns are the probe key.
+    /// The atom's index. Its first `key.len()` columns are the probe key.
     index: &'a DS,
     /// The atom's variables (canonical indices), one per column, in column
     /// order (the paper's `x_j`).
     variables: &'a [usize],
-    /// How many leading columns form the key: `index.key_len()`.
-    key_len: usize,
+    /// The probe key, `index.key_len()` values: what the row holds for the
+    /// atom's leading variables, rewritten each time the step is reached.
+    key: Vec<usize>,
 }
 
 impl<'a, DS: KeyedIterable> Step<'a, DS> {
@@ -82,7 +83,7 @@ impl<'a, DS: KeyedIterable> Step<'a, DS> {
         Self {
             index,
             variables,
-            key_len,
+            key: vec![0; key_len],
         }
     }
 }
@@ -93,29 +94,24 @@ impl<'a, DS: KeyedIterable> Step<'a, DS> {
 /// Probes the first step's index on the key `row` holds for its leading
 /// variables, writes each match's remaining columns into `row`, and descends
 /// into the later steps. Past the last step every variable is bound and `row`
-/// is emitted. `keys` is scratch, `key_len` slots per step, so the recursion
-/// allocates nothing: this level's key is the front of `keys`, kept intact
-/// while the deeper levels use the rest.
+/// is emitted. Each step owns its key, so the recursion allocates nothing and
+/// a level's key stays intact while the deeper levels run.
 fn descend<DS: KeyedIterable, S: FnMut(&[usize])>(
-    steps: &[Step<'_, DS>], row: &mut [usize], keys: &mut [usize], emit: &mut S,
+    steps: &mut [Step<'_, DS>], row: &mut [usize], emit: &mut S,
 ) {
-    let Some((step, later)) = steps.split_first() else {
+    let Some((step, later)) = steps.split_first_mut() else {
         emit(row);
         return;
     };
-    let (key, later_keys) = keys.split_at_mut(step.key_len);
-    for (slot, &variable) in key.iter_mut().zip(step.variables) {
+    for (slot, &variable) in step.key.iter_mut().zip(step.variables) {
         *slot = row[variable];
     }
-    let key: &[usize] = key;
-    for tuple in step.index.probe(key) {
-        for (&variable, &value) in step.variables[step.key_len..]
-            .iter()
-            .zip(&tuple[step.key_len..])
-        {
+    let key_len = step.key.len();
+    for tuple in step.index.probe(&step.key) {
+        for (&variable, &value) in step.variables[key_len..].iter().zip(&tuple[key_len..]) {
             row[variable] = value;
         }
-        descend(later, row, later_keys, emit);
+        descend(later, row, emit);
     }
 }
 
@@ -168,11 +164,10 @@ where
         // no other), so no slot of `row` is left unbound. An empty body has
         // no step, and `descend` emits its one answer, the empty row.
         debug_assert!(bound.iter().all(|&b| b), "unbound variable");
-        // The only allocations of the join besides the steps: the row, in
-        // canonical variable order, and the keys, `key_len` slots per step.
+        // The only allocation of the join besides the steps and their keys:
+        // the row, in canonical variable order.
         let mut row = vec![0; analysis.num_vars];
-        let mut keys = vec![0; steps.iter().map(|step| step.key_len).sum()];
-        descend(&steps, &mut row, &mut keys, &mut emit);
+        descend(&mut steps, &mut row, &mut emit);
     }
 }
 

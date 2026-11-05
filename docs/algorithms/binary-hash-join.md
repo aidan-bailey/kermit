@@ -29,13 +29,13 @@ join_for_each(query, indexes, emit):         # query: an ExecutedQuery, plan che
     steps ← [(indexes[id_j], x_j, k_j) for each body atom j, in body order]
     assert for each step j:  x_j[..k_j] are bound by steps before j
                              x_j[k_j..] are not
-    row ← scratch[num_vars];  keys ← scratch[Σ k_j]      # allocated once per join
+    row ← scratch[num_vars];  key_j ← scratch[k_j] for each step j   # allocated once per join
     descend(0)                           # an empty body: one empty row
 
 descend(j):
     if j = |steps|: emit(row); return
-    key ← row[x_j[..k_j]]
-    for t in I_j.probe(key):             # k_j = 0: every row, in source order
+    key_j ← row[x_j[..k_j]]
+    for t in I_j.probe(key_j):           # k_j = 0: every row, in source order
         row[x_j[i]] ← t[i]   for i in k_j..arity_j
         descend(j + 1)
 ```
@@ -43,7 +43,7 @@ descend(j):
 Rust mapping, in [`kermit-algos/src/keyed/binary_hash_join.rs`](../../kermit-algos/src/keyed/binary_hash_join.rs):
 
 - `join_for_each` → `<BinaryHashJoin as JoinAlgo<DS>>::join_for_each`, which checks the index count (`assert_index_count`), builds the steps from the `ExecutedQuery`'s stored analysis and its `atom_indexes` (a self-join reads one index through two steps), and calls `descend`.
-- One loop level → `descend(steps, row, keys, emit)`. It splits `keys` into this level's key and the deeper levels' slots, so a level's key stays intact while the levels below it run.
+- One loop level → `descend(steps, row, emit)`. Each step owns its key buffer, so a level's key stays intact while the levels below it run.
 - A step and the invariant check → `Step::new`.
 
 **Where the join order comes from.** `join_for_each` reads the executed body left to right and derives nothing. [`plan_indexes`](../../kermit-algos/src/index_plan.rs) under `TrieLevels::ProbeKeys` does the deriving, by the rule of [`join_order.rs`](../../kermit-algos/src/join_order.rs), which reads a variable order as a sequence of binding events: each variable of the order that is not yet bound joins the atom that binds it (the unjoined atom containing it with the most variables already bound, ties to the earliest in the body), and an atom whose variables are then all bound is probed at once. The order `V′` it returns lists each joined atom's new variables after its key variables, so an index whose columns follow `V′` has its key first, and `IndexSpec::levels` is the key length: `0` for the driver (the first atom) and for an atom joined across a cross product.
@@ -54,7 +54,7 @@ Rust mapping, in [`kermit-algos/src/keyed/binary_hash_join.rs`](../../kermit-alg
 - **The body order is the join order.** Step `j` is body atom `j`. `plan_indexes` lists the executed body in join order, with `#0` the driver. Reordering the body without re-planning the keys breaks the invariant above.
 - **Constants and repeated variables never reach the join.** `kermit::db::prepare` turns each body atom into an access, and the build applies its filter while it copies the rows into the index, so every atom here has distinct variables, one per column. An atom of constants only builds no index: its row count multiplies the results on a structure that keeps duplicates (`Relation::KEEPS_DUPLICATES`, true for `HashIndex`), and a zero count ends the query. A placeholder arrives as its own fresh variable (`rewrite_placeholders`).
 - **Every variable of the query is emitted, in canonical order.** `row[v]` is canonical variable `v` (head variables first). `kermit::db::execute` lends the head prefix `&row[..head_len]`, so body-only variables never reach the caller. Every variable is carried by some atom, which an `ExecutedQuery` guarantees, so no slot of the row is left unbound. An empty body has no step, and `descend` emits its one answer, the empty row, once.
-- **The result is streamed and the join allocates once.** `emit(row)` lends the one scratch row. The row, the key scratch and the steps are allocated once per join, and `probe` allocates nothing, so emitting a tuple, or descending, allocates nothing (`kermit/tests/result_allocation.rs`: result size, permuted index, descent count and collected cells).
+- **The result is streamed and the join allocates once.** `emit(row)` lends the one scratch row. The row, the steps and each step's key are allocated once per join, and `probe` allocates nothing, so emitting a tuple, or descending, allocates nothing (`kermit/tests/result_allocation.rs`: result size, permuted index, descent count and collected cells).
 - **Bag semantics.** `HashIndex` lends each duplicate row separately, so a duplicated row on either side of a join multiplies its matches, as on `HashTrie`. The cell's counts equal `HashTriejoin`'s on every query.
 - **The plan arrives checked.** `join_for_each` takes an [`ExecutedQuery`](../../kermit-algos/src/executed.rs), whose constructor checked the plan against the query (a permutation of the query's variables whose order respects every atom's column order), so the join validates nothing. Every plan `plan_indexes` returns under `ProbeKeys` passes that check, since each atom lists its variables in `V′` order. The one input the type cannot check, the number of indexes, panics (`BinaryHashJoin::join_for_each: {len} indexes for a query that reads {n}`).
 
@@ -64,7 +64,7 @@ Let `a` be the number of body atoms, `v` the number of variables, and `P_j` the 
 
 | Operation | Time | Notes |
 |---|---|---|
-| `join_for_each` setup | O(a + v) | The steps, the row and the key scratch; none per result row. The analysis is the `ExecutedQuery`'s, computed once at `prepare`. |
+| `join_for_each` setup | O(a + v) | The steps, their keys and the row; none per result row. The analysis is the `ExecutedQuery`'s, computed once at `prepare`. |
 | One probe (`probe`) | O(1) expected, O(rows) worst | Directory load factor ≤ 1 and Fibonacci bucket selection; the key comparison filters other keys' rows from a chain, so a degenerate hash costs chain length, never correctness. |
 | `join_for_each`, total | O(Σ_{j≥1} P_{j−1} · probe + Σ_j P_j) | The sum of the intermediate results: each partial result probes the next atom once, and each match is written once. |
 
