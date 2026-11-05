@@ -123,8 +123,8 @@ mod duckdb_cells {
         let label = &case.label;
         let loaded = DuckDb::load(settings, &case.catalog, &case.prepared)
             .unwrap_or_else(|e| panic!("{label}: {e}"));
-        let built = DuckDb::build(&loaded, &case.catalog, &case.prepared)
-            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let built =
+            DuckDb::build(&loaded, &case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
         let multiplicity =
             check_multiplicity(&case.catalog, &case.prepared, DuckDb::KEEPS_DUPLICATES);
         check(&built, multiplicity);
@@ -289,8 +289,7 @@ mod nemo_cells {
         Nemo::supports(&case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
         let loaded = Nemo::load(&(), &case.catalog, &case.prepared)
             .unwrap_or_else(|e| panic!("{label}: {e}"));
-        let built = Nemo::build(&loaded, &case.catalog, &case.prepared)
-            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let built = Nemo::build(&loaded, &case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
         let multiplicity =
             check_multiplicity(&case.catalog, &case.prepared, Nemo::KEEPS_DUPLICATES);
         check(&built, multiplicity);
@@ -379,7 +378,7 @@ mod nemo_cells {
         }
         let loaded = Nemo::load(&(), catalog, &prepared)
             .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
-        let built = Nemo::build(&loaded, catalog, &prepared)
+        let built = Nemo::build(&loaded, &prepared)
             .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
         let (count, kept) =
             Nemo::materialize(&built).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));

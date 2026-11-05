@@ -178,9 +178,7 @@ impl Engine for Nemo {
 
     /// The timed build: a fresh database, one table per spec loaded through a
     /// `ViewProvider`, and the join plan.
-    fn build<'l>(
-        loaded: &'l NemoLoaded, _catalog: &Catalog, prepared: &Prepared,
-    ) -> Result<NemoBuilt, EngineError>
+    fn build<'l>(loaded: &'l NemoLoaded, prepared: &Prepared) -> Result<NemoBuilt, EngineError>
     where
         Self: 'l,
     {
@@ -616,7 +614,7 @@ mod tests {
         let prepared = prepared_for(&c, text);
         Nemo::supports(&prepared).expect("Nemo runs the query");
         let loaded = Nemo::load(&(), &c, &prepared).expect("the relations load");
-        Nemo::build(&loaded, &c, &prepared).expect("the build succeeds")
+        Nemo::build(&loaded, &prepared).expect("the build succeeds")
     }
 
     /// The `materialize` count and the sorted `rows` of `text` over `relations`
@@ -844,7 +842,7 @@ mod tests {
         let prepared = prepare(&c, &query, &planner, TrieLevels::All).expect("a valid query");
         assert!(prepared.indexes().is_empty());
         let loaded = Nemo::load(&(), &c, &prepared).expect("nothing to load");
-        let Err(error) = Nemo::build(&loaded, &c, &prepared) else {
+        let Err(error) = Nemo::build(&loaded, &prepared) else {
             panic!("a query of checks has no join for Nemo to run");
         };
         assert_eq!(error.engine, "nemo");

@@ -81,10 +81,9 @@ impl<E: Engine + 'static> Subject for EngineSubject<'_, E> {
     fn build(&self) -> EngineBuilt<'_, E> {
         let multiplicity = check_multiplicity(self.catalog, self.prepared, E::KEEPS_DUPLICATES);
         let engine = match &self.loaded {
-            | Some(loaded) if multiplicity > 0 => Some(expect_clean(
-                E::build(loaded, self.catalog, self.prepared),
-                "build",
-            )),
+            | Some(loaded) if multiplicity > 0 => {
+                Some(expect_clean(E::build(loaded, self.prepared), "build"))
+            },
             | _ => None,
         };
         EngineBuilt {
@@ -163,7 +162,7 @@ impl<E: Engine + 'static> EngineCell<E> {
         let context = || format!("{label} failed on query '{}'", prepared.query());
         let loaded = E::load(&self.settings, catalog, prepared).with_context(context)?;
         {
-            let built = E::build(&loaded, catalog, prepared).with_context(context)?;
+            let built = E::build(&loaded, prepared).with_context(context)?;
             if count {
                 if E::STREAMS {
                     E::stream(&built).with_context(context)?;
@@ -357,7 +356,7 @@ pub(crate) mod test_support {
             Ok(())
         }
 
-        fn build<'l>(_: &'l (), _: &Catalog, _: &Prepared) -> Result<u64, EngineError>
+        fn build<'l>(_: &'l (), _: &Prepared) -> Result<u64, EngineError>
         where
             Self: 'l,
         {

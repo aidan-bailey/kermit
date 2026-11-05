@@ -319,7 +319,7 @@ impl Engine for DuckDb {
     }
 
     fn build<'l>(
-        loaded: &'l DuckDbLoaded, _catalog: &Catalog, prepared: &Prepared,
+        loaded: &'l DuckDbLoaded, prepared: &Prepared,
     ) -> Result<DuckDbBuilt<'l>, EngineError>
     where
         Self: 'l,
@@ -572,7 +572,7 @@ mod tests {
         let catalog = graph();
         let prepared = prepared(&catalog, TRIANGLE);
         let loaded = load(&catalog, &prepared);
-        let built = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
+        let built = DuckDb::build(&loaded, &prepared).expect("DuckDB builds");
         assert_eq!(DuckDb::stream(&built).expect("streams"), 2);
         assert_eq!(
             DuckDb::stream(&built).expect("streams again"),
@@ -610,7 +610,7 @@ mod tests {
         let rows_of = |text: &str| {
             let prepared = prepared(&catalog, text);
             let loaded = load(&catalog, &prepared);
-            let built = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
+            let built = DuckDb::build(&loaded, &prepared).expect("DuckDB builds");
             let mut rows = DuckDb::rows(&built).expect("returns rows");
             rows.sort();
             rows
@@ -643,8 +643,8 @@ mod tests {
         let prepared = prepared(&catalog, TRIANGLE);
         let loaded = load(&catalog, &prepared);
         assert_eq!(spec_tables(&loaded), 0, "loading builds no spec table");
-        let first = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
-        let second = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds again");
+        let first = DuckDb::build(&loaded, &prepared).expect("DuckDB builds");
+        let second = DuckDb::build(&loaded, &prepared).expect("DuckDB builds again");
         assert_eq!(spec_tables(&loaded), 2);
         drop(first);
         assert_eq!(spec_tables(&loaded), 1);

@@ -93,14 +93,14 @@ pub trait Engine {
         settings: &Self::Settings, catalog: &Catalog, prepared: &Prepared,
     ) -> Result<Self::Loaded, EngineError>;
     /// The timed build: one filtered copy per `IndexSpec`, and whatever the
-    /// engine builds from it. It takes the catalog because Nemo's providers
-    /// stream from `Catalog::shared_tuples`.
+    /// engine builds from it. It reads the rows from what `load` left (DuckDB
+    /// its base tables, Nemo its handles on the catalog's tuples).
     ///
     /// # Errors
     ///
     /// The engine's failure to build.
     fn build<'l>(
-        loaded: &'l Self::Loaded, catalog: &Catalog, prepared: &Prepared,
+        loaded: &'l Self::Loaded, prepared: &Prepared,
     ) -> Result<Self::Built<'l>, EngineError>
     where
         Self: 'l;
@@ -255,7 +255,7 @@ mod tests {
         }
 
         fn build<'l>(
-            loaded: &'l Vec<String>, _catalog: &Catalog, _prepared: &Prepared,
+            loaded: &'l Vec<String>, _prepared: &Prepared,
         ) -> Result<&'l [String], EngineError>
         where
             Self: 'l,
@@ -284,7 +284,7 @@ mod tests {
         let catalog = catalog();
         let prepared = prepared(&catalog);
         let loaded = RelationNames::load(&(), &catalog, &prepared).expect("loads");
-        let built = RelationNames::build(&loaded, &catalog, &prepared).expect("builds");
+        let built = RelationNames::build(&loaded, &prepared).expect("builds");
         assert_eq!(RelationNames::version(&loaded), "2 relations");
         assert_eq!(RelationNames::stream(&built).expect("streams"), 2);
         assert_eq!(RelationNames::rows(&built).expect("has rows"), vec![vec![
@@ -301,7 +301,7 @@ mod tests {
         let catalog = catalog();
         let prepared = prepared(&catalog);
         let loaded = RelationNames::load(&(), &catalog, &prepared).expect("loads");
-        let built = RelationNames::build(&loaded, &catalog, &prepared).expect("builds");
+        let built = RelationNames::build(&loaded, &prepared).expect("builds");
         let error = RelationNames::materialize(&built).expect_err("this engine cannot materialize");
         assert_eq!(error.engine, "relation-names");
         assert_eq!(error.to_string(), "relation-names: cannot materialize");
