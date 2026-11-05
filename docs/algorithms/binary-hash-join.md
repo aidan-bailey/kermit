@@ -50,7 +50,7 @@ Rust mapping, in [`kermit-algos/src/keyed/binary_hash_join.rs`](../../kermit-alg
 
 ## Invariants
 
-- **Probe keys lead the columns.** For every step `j`, the first `key_len` variables of its atom are bound by the steps before `j`, and none of the others is bound yet. `Step::new` asserts it (the panic message starts with `probe keys lead the columns`), in the role LFTJ's ascent assertion plays. If it broke, a key column no earlier atom binds would probe with a stale value from the scratch row, and a column past the key that was already bound would be overwritten instead of joined on, so the join would return wrong rows silently. It catches a query not planned under `ProbeKeys` (for example, indexes keyed on every column, as `bench ds` builds them); `kermit::db::build` also refuses an index set planned under another trie-level policy, one layer up. Pinned by `an_index_keyed_on_every_column_is_refused` and `a_key_no_earlier_atom_binds_is_refused`.
+- **Probe keys lead the columns.** For every step `j`, the first `key_len` variables of its atom are bound by the steps before `j`, and none of the others is bound yet. `Step::new` asserts it (the panic message starts with `probe keys lead the columns`), in the role LFTJ's ascent assertion plays. If it broke, a key column no earlier atom binds would probe with a stale value from the scratch row, and a column past the key that was already bound would be overwritten instead of joined on, so the join would return wrong rows silently. It catches a query not planned under `ProbeKeys` (for example, indexes keyed on every column, as `bench ds` builds them); `kermit::db::build` also refuses an index set planned under another trie-level policy, one layer up. Pinned by `an_index_keyed_on_every_column_is_refused`, `a_key_no_earlier_atom_binds_is_refused` and `a_column_past_the_key_that_an_earlier_atom_binds_is_refused`.
 - **The body order is the join order.** Step `j` is body atom `j`. `plan_indexes` lists the executed body in join order, with `#0` the driver. Reordering the body without re-planning the keys breaks the invariant above.
 - **Constants and repeated variables never reach the join.** `kermit::db::prepare` turns each body atom into an access, and the build applies its filter while it copies the rows into the index, so every atom here has distinct variables, one per column. An atom of constants only builds no index: its row count multiplies the results on a structure that keeps duplicates (`Relation::KEEPS_DUPLICATES`, true for `HashIndex`), and a zero count ends the query. A placeholder arrives as its own fresh variable (`rewrite_placeholders`).
 - **Every variable of the query is emitted, in canonical order.** `row[v]` is canonical variable `v` (head variables first). `kermit::db::execute` lends the head prefix `&row[..head_len]`, so body-only variables never reach the caller. Every variable is carried by some atom, which an `ExecutedQuery` guarantees, so no slot of the row is left unbound. An empty body has no step, and `descend` emits its one answer, the empty row, once.
@@ -60,11 +60,11 @@ Rust mapping, in [`kermit-algos/src/keyed/binary_hash_join.rs`](../../kermit-alg
 
 ## Complexity
 
-Let `a` be the number of body atoms, `v` the number of variables, and `P_j` the number of partial results that reach step `j` (`P_0 = 1`, and `P_a` is the output size before head projection).
+Let `a` be the number of body atoms, `v` the number of variables, `c` the number of columns over all body atoms (at least `a` and at least `v`), and `P_j` the number of partial results that reach step `j` (`P_0 = 1`, and `P_a` is the output size before head projection).
 
 | Operation | Time | Notes |
 |---|---|---|
-| `join_for_each` setup | O(a + v) | The steps, their keys and the row; none per result row. The analysis is the `ExecutedQuery`'s, computed once at `prepare`. |
+| `join_for_each` setup | O(c) | The steps, their keys and the row, with `Step::new` reading every column once; none per result row. The analysis is the `ExecutedQuery`'s, computed once at `prepare`. |
 | One probe (`probe`) | O(1) expected, O(rows) worst | Directory load factor ≤ 1 and Fibonacci bucket selection; the key comparison filters other keys' rows from a chain, so a degenerate hash costs chain length, never correctness. |
 | `join_for_each`, total | O(Σ_{j≥1} P_{j−1} · probe + Σ_j P_j) | The sum of the intermediate results: each partial result probes the next atom once, and each match is written once. |
 

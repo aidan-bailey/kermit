@@ -133,8 +133,8 @@ impl<H: HashStrategy> HashIndex<H> {
     }
 
     /// Sizes the directory for the rows held and links every row, last to
-    /// first, each prepended to its bucket's chain: three allocations in all
-    /// (`rows` is the caller's), none per row. An index with no key columns
+    /// first, each prepended to its bucket's chain: two allocations
+    /// (`directory` and `next`), none per row. An index with no key columns
     /// has no chains to link.
     fn link_rows(&mut self) {
         let key_len = self.key_len();
