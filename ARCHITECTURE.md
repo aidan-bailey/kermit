@@ -101,7 +101,7 @@ The consequence is that each fork propagates up every layer of the stack, and ea
 
 The keyed family has the same layers, with no iterator type of its own:
 
-- **Structure** `HashIndex<H>`; **algorithm** `BinaryHashJoin`; **`Projectable`** hand-rolled on `HashIndex` (it rebuilds from `scan`, keyed on every projected column).
+- **Structure** `HashIndex<H>`; **algorithm** `BinaryHashJoin`; **`Projectable`** hand-rolled on `HashIndex` (it rebuilds through a `TupleView` of its rows, keyed on every projected column).
 - **Engine** `binary_join_for_each` / `binary_join` free functions over a `Catalog`, building `HashIndex<H>` indexes per query, over the same `prepare` / `build` / `execute` lifecycle.
 - **Bench cell** `Execution::IndexBhj { hasher }` / `IndexBhj<H>` (`JOIN_MUTATES = false`, since a probe changes nothing).
 - **`bench run` dispatch** the same generic `run_benchmark<C>`, the cell wrapped in a `FamilyCell`; **`bench ds` dispatch** the same `run_ds_bench<F>`, over `HashIndexFamily<H>`.
@@ -261,9 +261,8 @@ Tables use linear probing with power-of-two capacity, doubling above a 0.7 load 
 A chained hash table keyed on the first `levels()` columns: the structure of the binary hash join baseline, Free Join §2.2's "hash table keyed on the attributes shared with the relations before it". It is generic over a `HashStrategy` (`SipHashStrategy` default, `FxHashStrategy`), reuses `--ds-layout-hasher`, and has no other Layout, Config or BuildMode axis. In outline:
 
 ```text
-header:    RelationHeader
+header:    RelationHeader // its levels() is the key length
 rows:      Tuples      // the view's rows, one copy, in source order
-key_len:   usize       // header.levels()
 directory: Vec<RowId>  // power-of-two bucket heads, NIL when empty
 next:      Vec<RowId>  // per row, the next row of its bucket's chain
 ```

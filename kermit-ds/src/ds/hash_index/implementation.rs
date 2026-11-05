@@ -8,8 +8,8 @@ use {
         relation::{check_view_arity, Projectable, Relation, RelationHeader},
     },
     kermit_iters::{
-        HasOptimizationAxes, HashStrategy, JoinIterable, LayoutOption, RowId, SipHashStrategy,
-        TrieLevels, TupleView, Tuples,
+        Filter, HasOptimizationAxes, HashStrategy, JoinIterable, KeyedIterable, LayoutOption,
+        RowId, SipHashStrategy, TrieLevels, TupleView, Tuples,
     },
     serde_json::Value,
     std::{collections::BTreeMap, marker::PhantomData},
@@ -63,7 +63,6 @@ const FIBONACCI: u64 = 0x9E37_79B9_7F4A_7C15;
 ///   every chain lists its rows in ascending row id: source order.
 /// - `directory.len()` is a power of two, at least 2, and at least the row
 ///   count. `directory` and `next` are empty exactly when `key_len == 0`.
-/// - `key_len` is `header.levels()`, at most the arity.
 ///
 /// # Duplicates
 ///
@@ -95,8 +94,6 @@ pub struct HashIndex<H: HashStrategy = SipHashStrategy> {
     pub(super) header: RelationHeader,
     /// The rows, in source order.
     pub(super) rows: Tuples,
-    /// How many leading columns form the key (`header.levels()`).
-    pub(super) key_len: usize,
     /// Per bucket, the first row of its chain or `NIL`.
     pub(super) directory: Vec<RowId>,
     /// Per row, the next row of its chain or `NIL`.
@@ -108,11 +105,9 @@ pub struct HashIndex<H: HashStrategy = SipHashStrategy> {
 impl<H: HashStrategy> HashIndex<H> {
     /// An index over `rows` under `header`, sized for exactly those rows.
     fn with_rows(header: RelationHeader, rows: Tuples) -> Self {
-        let key_len = header.levels();
         let mut index = Self {
             header,
             rows,
-            key_len,
             directory: Vec::new(),
             next: Vec::new(),
             _hasher: PhantomData,
@@ -138,11 +133,12 @@ impl<H: HashStrategy> HashIndex<H> {
     }
 
     /// Sizes the directory for the rows held and links every row, last to
-    /// first, each prepended to its bucket's chain: three allocations in all
-    /// (`rows` is the caller's), none per row. An index with no key columns
+    /// first, each prepended to its bucket's chain: two allocations
+    /// (`directory` and `next`), none per row. An index with no key columns
     /// has no chains to link.
     fn link_rows(&mut self) {
-        if self.key_len == 0 {
+        let key_len = self.key_len();
+        if key_len == 0 {
             return;
         }
         let rows = self.rows.len();
@@ -150,7 +146,7 @@ impl<H: HashStrategy> HashIndex<H> {
         self.next = vec![NIL; rows];
         for position in (0..rows).rev() {
             let row = row_id(position);
-            let bucket = self.bucket(&self.rows.row(row)[..self.key_len]);
+            let bucket = self.bucket(&self.rows.row(row)[..key_len]);
             self.next[position] = self.directory[bucket];
             self.directory[bucket] = row;
         }
@@ -159,7 +155,7 @@ impl<H: HashStrategy> HashIndex<H> {
     /// Appends `row`, the newest and so the highest id, to the tail of its
     /// chain, which keeps the chain in source order. Linear in the chain.
     fn append_to_chain(&mut self, row: RowId) {
-        let bucket = self.bucket(&self.rows.row(row)[..self.key_len]);
+        let bucket = self.bucket(&self.rows.row(row)[..self.key_len()]);
         let mut at = self.directory[bucket];
         if at == NIL {
             self.directory[bucket] = row;
@@ -232,7 +228,7 @@ impl<H: HashStrategy> Relation for HashIndex<H> {
             arity
         );
         self.rows.push(tuple);
-        if self.key_len == 0 {
+        if self.key_len() == 0 {
             return;
         }
         if self.rows.len() > self.directory.len() {
@@ -253,9 +249,10 @@ impl<H: HashStrategy> Relation for HashIndex<H> {
 }
 
 impl<H: HashStrategy> Projectable for HashIndex<H> {
-    /// Rebuilds from the stored rows (the rows `scan` lends) with only
-    /// `columns`, in the order given, under a nameless header; the new index
-    /// is keyed on every projected column.
+    /// Rebuilds from the stored rows (the rows `scan` lends) read through a
+    /// view of only `columns`, in the order given, so they are copied once,
+    /// under a nameless header; the new index is keyed on every projected
+    /// column.
     ///
     /// # Panics
     ///
@@ -275,15 +272,7 @@ impl<H: HashStrategy> Projectable for HashIndex<H> {
         } else {
             RelationHeader::new_nameless(attrs)
         };
-
-        let mut projected = Tuples::with_capacity(columns.len(), self.rows.len());
-        let mut row = Vec::with_capacity(columns.len());
-        for tuple in self.rows.rows() {
-            row.clear();
-            row.extend(columns.iter().map(|&column| tuple[column]));
-            projected.push(&row);
-        }
-        Self::from_tuples(header, projected)
+        Self::from_view(header, TupleView::new(&self.rows, Filter::none(), columns))
     }
 }
 
