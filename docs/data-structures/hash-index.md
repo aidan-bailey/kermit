@@ -8,9 +8,8 @@
 
 ```rust
 HashIndex<H: HashStrategy = SipHashStrategy> {
-    header: RelationHeader,
+    header: RelationHeader, // its levels() is the key length
     rows: Tuples,            // view.materialize(): one copy, in source order
-    key_len: usize,          // header.levels()
     directory: Vec<RowId>,   // `slots` bucket heads, NIL when empty; empty when key_len == 0
     next: Vec<RowId>,        // per row, the next row of its bucket's chain; empty when key_len == 0
     _hasher: PhantomData<H>, // hasher, zero-sized
@@ -32,7 +31,7 @@ The key length is `header.levels()`. `kermit::db::prepare` plans an index under 
 ## Invariants
 
 - **Chains are in source order.** Linking last to first prepends each row to its bucket, so each chain lists its rows in ascending row id; `probe` and `scan` therefore lend rows in source order. `insert` keeps this by appending to a chain's tail and relinking last to first on a rehash, so an index built by inserts has the same contents (`directory`, `next`, `rows`) as a bulk build of the same rows (`insert_builds_the_arrays_the_bulk_build_builds`). Capacities may differ, since `next` and `rows` grow by doubling; only `from_view` is benchmarked.
-- **`key_len == header.levels()`**, at most the arity. `probe` asserts `key.len() == key_len()`: a key of the wrong length would compare the wrong columns.
+- **`key_len()` is `header.levels()`**, at most the arity; the header is the one place the key length is stored. `probe` asserts `key.len() == key_len()`: a key of the wrong length would compare the wrong columns.
 - **The directory is a power of two, at least 2, and at least the row count**, and `directory` and `next` are empty exactly when `key_len == 0`.
 - **Duplicates are kept.** `Relation::KEEPS_DUPLICATES` is `true`: a repeated row is stored and lent once per copy, `Cardinality::tuple_count` counts it, and an all-constant atom's row count multiplies a join's results, as on `HashTrie` (`kermit::db::build` clamps it only for structures that absorb duplicates).
 - **No collision means no match.** A hash collision only puts rows of other keys in the same chain. The key comparison lends a row only if its key columns equal the probe's key, so `probe` is exact whatever the hasher does (`keyed_index_test_suite!` runs it under a hasher that sends every value to bucket 0).

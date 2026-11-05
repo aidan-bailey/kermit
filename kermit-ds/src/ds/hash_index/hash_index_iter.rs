@@ -52,7 +52,7 @@ impl<'a, Every: Iterator<Item = &'a [usize]>> Iterator for Probe<'a, Every> {
 }
 
 impl<H: HashStrategy> KeyedIterable for HashIndex<H> {
-    fn key_len(&self) -> usize { self.key_len }
+    fn key_len(&self) -> usize { self.header.levels() }
 
     /// Every row, in source order.
     fn scan(&self) -> impl Iterator<Item = &[usize]> + '_ { self.rows.rows() }
@@ -63,10 +63,10 @@ impl<H: HashStrategy> KeyedIterable for HashIndex<H> {
     fn probe<'a>(&'a self, key: &'a [usize]) -> impl Iterator<Item = &'a [usize]> + 'a {
         assert_eq!(
             key.len(),
-            self.key_len,
+            self.key_len(),
             "probe: a key of {} values on an index keyed on {} columns",
             key.len(),
-            self.key_len
+            self.key_len()
         );
         if key.is_empty() {
             return Probe::Every(self.rows.rows());
