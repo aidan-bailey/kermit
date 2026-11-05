@@ -10,9 +10,10 @@
 //!
 //! Every engine method is fallible, but a timed body cannot return an error. So
 //! [`EngineCell::preflight`] runs the whole path once (the count only when
-//! asked), untimed, and turns any error into the cell's error; the timed bodies
-//! then `expect`, because an error that first appears after a clean preflight
-//! is a broken invariant.
+//! asked), untimed, inside [`Cell::subject`], and turns any error into the
+//! cell's error; the subject keeps the preflight's load. The timed bodies then
+//! `expect`, because an error that first appears after a clean preflight is a
+//! broken invariant.
 
 use {
     super::{
@@ -144,6 +145,37 @@ pub(crate) struct EngineCell<E: Engine> {
     pub(crate) settings: E::Settings,
 }
 
+impl<E: Engine + 'static> EngineCell<E> {
+    /// The preflight of [`Cell::subject`]: every fallible engine step once,
+    /// so that the timed bodies may `expect`. Returns the loaded state for
+    /// the subject to keep.
+    fn preflight(
+        &self, catalog: &Catalog, prepared: &Prepared, count: bool,
+    ) -> anyhow::Result<E::Loaded> {
+        let label = self.label();
+        E::supports(prepared).map_err(|unsupported| {
+            anyhow::anyhow!(
+                "{label} cannot run query '{}': {}",
+                prepared.query(),
+                unsupported.reason
+            )
+        })?;
+        let context = || format!("{label} failed on query '{}'", prepared.query());
+        let loaded = E::load(&self.settings, catalog, prepared).with_context(context)?;
+        {
+            let built = E::build(&loaded, catalog, prepared).with_context(context)?;
+            if count {
+                if E::STREAMS {
+                    E::stream(&built).with_context(context)?;
+                } else {
+                    E::materialize(&built).with_context(context)?;
+                }
+            }
+        }
+        Ok(loaded)
+    }
+}
+
 impl<E: Engine + 'static> Cell for EngineCell<E> {
     type Subject<'a>
         = EngineSubject<'a, E>
@@ -189,47 +221,20 @@ impl<E: Engine + 'static> Cell for EngineCell<E> {
         }
     }
 
-    /// Support, then load and build, then, when `count` is true, one count
-    /// (`stream`, or else `materialize`), untimed. `count` is false only when
-    /// the memory guard skips `materialize` for an engine that does not stream;
-    /// `run_benchmark` always passes true for a streaming one. A query of
-    /// checks never reaches the engine, so it needs no check.
-    fn preflight(&self, catalog: &Catalog, prepared: &Prepared, count: bool) -> anyhow::Result<()> {
-        if prepared.indexes().is_empty() {
-            return Ok(());
-        }
-        let label = self.label();
-        E::supports(prepared).map_err(|unsupported| {
-            anyhow::anyhow!(
-                "{label} cannot run query '{}': {}",
-                prepared.query(),
-                unsupported.reason
-            )
-        })?;
-        let context = || format!("{label} failed on query '{}'", prepared.query());
-        let loaded = E::load(&self.settings, catalog, prepared).with_context(context)?;
-        let built = E::build(&loaded, catalog, prepared).with_context(context)?;
-        if count {
-            if E::STREAMS {
-                E::stream(&built).with_context(context)?;
-            } else {
-                E::materialize(&built).with_context(context)?;
-            }
-        }
-        Ok(())
-    }
-
+    /// The preflight, untimed: support, then the one load the subject keeps,
+    /// then a trial build and, when `count` is true, one count on it
+    /// (`stream`, or else `materialize`). The trial build is dropped before
+    /// the describe step builds. `count` is false only when the memory guard
+    /// skips `materialize` for an engine that does not stream; `run_benchmark`
+    /// always passes true for a streaming one. A query of checks never reaches
+    /// the engine, so it loads nothing and needs no check.
     fn subject<'a>(
-        &'a self, catalog: &'a Catalog, prepared: &'a Prepared,
+        &'a self, catalog: &'a Catalog, prepared: &'a Prepared, count: bool,
     ) -> anyhow::Result<EngineSubject<'a, E>> {
         let loaded = if prepared.indexes().is_empty() {
             None
         } else {
-            let label = self.label();
-            Some(
-                E::load(&self.settings, catalog, prepared)
-                    .with_context(|| format!("{label} failed on query '{}'", prepared.query()))?,
-            )
+            Some(self.preflight(catalog, prepared, count)?)
         };
         Ok(EngineSubject {
             loaded,
@@ -291,6 +296,7 @@ pub(crate) mod test_support {
     thread_local! {
         static COUNTED: std::cell::RefCell<Vec<&'static str>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     fn counted(call: &'static str) { COUNTED.with(|counted| counted.borrow_mut().push(call)); }
@@ -300,6 +306,10 @@ pub(crate) mod test_support {
     pub(crate) fn take_counted() -> Vec<&'static str> {
         COUNTED.with(|counted| std::mem::take(&mut *counted.borrow_mut()))
     }
+
+    /// How many times the fakes of this test's thread have run `load` since
+    /// the last call.
+    pub(crate) fn take_loads() -> usize { LOADS.with(|loads| loads.replace(0)) }
 
     /// `stream` counts [`Fake::STREAM_ROWS`], `materialize` counts
     /// [`Fake::MATERIALIZE_ROWS`] and, when `S` (DuckDB-shaped), returns an
@@ -342,7 +352,10 @@ pub(crate) mod test_support {
             Ok(())
         }
 
-        fn load(_: &(), _: &Catalog, _: &Prepared) -> Result<(), EngineError> { Ok(()) }
+        fn load(_: &(), _: &Catalog, _: &Prepared) -> Result<(), EngineError> {
+            LOADS.with(|loads| loads.set(loads.get() + 1));
+            Ok(())
+        }
 
         fn build<'l>(_: &'l (), _: &Catalog, _: &Prepared) -> Result<u64, EngineError>
         where
@@ -436,7 +449,7 @@ mod tests {
         let catalog = duplicated_checks();
         let prepared = prepared(&catalog, "Q(X) :- r(X), s(c7, c8).");
         let cell = cell::<Bag>();
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         assert_eq!(subject.exercise(&built), Bag::STREAM_ROWS * 2);
         // `materialize` counts distinct rows, so the multiplicity does not
@@ -453,7 +466,7 @@ mod tests {
         let catalog = duplicated_checks();
         let prepared = prepared(&catalog, "Q(X) :- r(X), s(c7, c8).");
         let cell = cell::<Set>();
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         assert_eq!(subject.exercise(&built), Set::STREAM_ROWS);
     }
@@ -463,7 +476,7 @@ mod tests {
         let catalog = catalog(&[("r", 1, &[&[1], &[2]]), ("s", 2, &[&[9, 9]])]);
         let prepared = prepared(&catalog, "Q(X) :- r(X), s(c7, c8).");
         let cell = cell::<Bag>();
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         assert_eq!(subject.exercise(&built), 0);
         assert_eq!(subject.materialize(&built).unwrap().rows, 0);
@@ -480,9 +493,8 @@ mod tests {
         // never reaches the engine.
         let banned = checks_only(&catalog, "Q(X) :- banned(c1).");
         assert_eq!(banned.relations(), vec!["banned"]);
-        cell.preflight(&catalog, &banned, true).unwrap();
-        cell.preflight(&catalog, &prepared, true).unwrap();
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        cell.subject(&catalog, &banned, true).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         // The empty row, once per duplicate of the check's row.
         assert_eq!(subject.exercise(&built), 2);
@@ -497,7 +509,7 @@ mod tests {
         let prepared = prepared(&catalog, "Q(X) :- r(X).");
 
         let storing = cell::<Storing>();
-        let subject = storing.subject(&catalog, &prepared).unwrap();
+        let subject = storing.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         assert_eq!(subject.heap_bytes(&built), vec![Storing::SPACE_BYTES]);
         let axes = storing.subject_axes(&subject);
@@ -507,7 +519,7 @@ mod tests {
         assert!(subject.materialize(&built).unwrap().kept.is_none());
 
         let bag = cell::<Bag>();
-        let subject = bag.subject(&catalog, &prepared).unwrap();
+        let subject = bag.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         assert!(subject.heap_bytes(&built).is_empty());
     }
@@ -518,7 +530,7 @@ mod tests {
         let catalog = duplicated_checks();
         let prepared = prepared(&catalog, "Q(X) :- r(X).");
         let cell = cell::<Storing>();
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         let built = subject.build();
         let _ = subject.exercise(&built);
     }
@@ -540,11 +552,11 @@ mod tests {
         let supported = prepared(&catalog, "Q(X) :- r(X).");
         let banned = prepared(&catalog, "Q(X) :- banned(X).");
         let cell = cell::<Bag>();
-        cell.preflight(&catalog, &supported, true).unwrap();
-        let error = cell
-            .preflight(&catalog, &banned, true)
-            .unwrap_err()
-            .to_string();
+        cell.subject(&catalog, &supported, true).unwrap();
+        let Err(error) = cell.subject(&catalog, &banned, true) else {
+            panic!("the fake refuses a query that reads `banned`");
+        };
+        let error = error.to_string();
         assert!(error.contains("fake cannot run query"), "{error}");
         // `Prepared::query` is the executed query, which names the index `#0`
         // after `banned`.
@@ -562,15 +574,15 @@ mod tests {
         // false), which still loads and builds.
         let storing = cell::<Storing>();
         let _ = take_counted();
-        storing.preflight(&catalog, &prepared, false).unwrap();
+        storing.subject(&catalog, &prepared, false).unwrap();
         assert!(take_counted().is_empty());
-        storing.preflight(&catalog, &prepared, true).unwrap();
+        storing.subject(&catalog, &prepared, true).unwrap();
         assert_eq!(take_counted(), vec!["materialize"]);
 
         // A streaming engine counts through `stream`; `run_benchmark` always
         // passes true for it.
         let bag = cell::<Bag>();
-        bag.preflight(&catalog, &prepared, true).unwrap();
+        bag.subject(&catalog, &prepared, true).unwrap();
         assert_eq!(take_counted(), vec!["stream"]);
     }
 
@@ -578,10 +590,10 @@ mod tests {
     fn preflight_without_the_count_still_checks_support() {
         let catalog = duplicated_checks();
         let banned = prepared(&catalog, "Q(X) :- banned(X).");
-        let error = cell::<Storing>()
-            .preflight(&catalog, &banned, false)
-            .unwrap_err()
-            .to_string();
+        let Err(error) = cell::<Storing>().subject(&catalog, &banned, false) else {
+            panic!("the fake refuses a query that reads `banned`");
+        };
+        let error = error.to_string();
         assert!(error.contains("fake cannot run query"), "{error}");
         assert!(take_counted().is_empty());
     }

@@ -310,9 +310,9 @@ pub(crate) enum MaterializeVerdict {
 }
 
 impl MaterializeVerdict {
-    /// Whether the describe step and a cell's preflight may count: false only
-    /// when a subject that does not stream is skipped (its count is the
-    /// `materialize` the guard refused).
+    /// Whether the describe step and an engine cell's preflight may count:
+    /// false only when a subject that does not stream is skipped (its count is
+    /// the `materialize` the guard refused).
     pub(crate) fn counts(self) -> bool { !matches!(self, Self::SkipUncounted(_)) }
 
     /// The result's size in bytes, when the guard skips `materialize`.
@@ -465,15 +465,17 @@ fn run_benchmark<C: Cell>(
             );
         }
 
-        // The cell's preflight counts unless the materialize guard (bound at
-        // the top of this loop body) has skipped an uncounted `materialize`: it
-        // is that guard's decision, not a second copy of it.
-        // The executed query (`#k` ids) is in the inner message; the benchmark
-        // and the YAML query name it came from are the context.
-        let context = || format!("benchmark '{}' query '{}'", definition.name, query_def.name);
-        cell.preflight(catalog, prepared, guard.counts())
-            .with_context(context)?;
-        let subject = cell.subject(catalog, prepared).with_context(context)?;
+        // An engine cell's preflight (inside `subject`) counts unless the
+        // materialize guard (bound at the top of this loop body) has skipped
+        // an uncounted `materialize`: it is that guard's decision, not a
+        // second copy of it. The executed query (`#k` ids) is in the inner
+        // message; the benchmark and the YAML query name it came from are the
+        // context.
+        let subject = cell
+            .subject(catalog, prepared, guard.counts())
+            .with_context(|| {
+                format!("benchmark '{}' query '{}'", definition.name, query_def.name)
+            })?;
         let subject_axes = cell.subject_axes(&subject);
         let count = guard.counts()
             && ((verify && query_def.expected.is_some()) || single_run || materialize_requested);
@@ -1085,23 +1087,27 @@ mod tests {
         check_join_group_directories("join", &workload, &cells, &[Metric::Build]).unwrap();
     }
 
-    /// The executed query (`#0(X, Y)`) names no YAML query, so a failing
-    /// cell's error carries the benchmark and the query it came from.
-    #[test]
-    fn a_failing_engine_preflight_names_the_benchmark_and_the_query() {
+    /// Runs `queries` (name, Datalog) of a workload named `demo` over one
+    /// binary relation `relation` on the DuckDB-shaped fake, measuring
+    /// `metrics`, with Criterion writing into a temporary directory.
+    fn run_on_fake(
+        relation: &str, queries: &[(&str, &str)], metrics: &[Metric],
+    ) -> anyhow::Result<()> {
         use super::super::engine::test_support::Fake;
         let dir = tempfile::tempdir().unwrap();
-        // `Fake` refuses any query that reads a relation named `banned`.
-        let banned = dir.path().join("banned.csv");
-        std::fs::write(&banned, "1,2\n2,3\n").unwrap();
+        let path = dir.path().join(format!("{relation}.csv"));
+        std::fs::write(&path, "1,2\n2,3\n").unwrap();
         let workload = Workload {
             name: "demo".to_string(),
-            relation_paths: vec![banned],
-            queries: vec![NamedQuery {
-                name: "q-banned".to_string(),
-                query: "Q(X, Y) :- banned(X, Y).".parse().unwrap(),
-                expected: None,
-            }],
+            relation_paths: vec![path],
+            queries: queries
+                .iter()
+                .map(|&(name, text)| NamedQuery {
+                    name: name.to_string(),
+                    query: text.parse().unwrap(),
+                    expected: None,
+                })
+                .collect(),
         };
         let planner = PlannerArgs {
             optimiser: kermit_algos::Optimiser::Lexicographic,
@@ -1119,7 +1125,7 @@ mod tests {
             kind: BenchKind::Run,
             prefix: "run",
             planner,
-            metrics: &[Metric::Build],
+            metrics,
             queries_per_build: 1,
             verify: false,
             single_run: false,
@@ -1131,7 +1137,18 @@ mod tests {
         let cell = EngineCell::<Fake<true, false, true>> {
             settings: (),
         };
-        let error = run_benchmark(&cell, &prepared, settings, &mut sink).unwrap_err();
+        run_benchmark(&cell, &prepared, settings, &mut sink)
+    }
+
+    /// The executed query (`#0(X, Y)`) names no YAML query, so a failing
+    /// cell's error carries the benchmark and the query it came from.
+    #[test]
+    fn a_failing_engine_preflight_names_the_benchmark_and_the_query() {
+        // `Fake` refuses any query that reads a relation named `banned`.
+        let error = run_on_fake("banned", &[("q-banned", "Q(X, Y) :- banned(X, Y).")], &[
+            Metric::Build,
+        ])
+        .unwrap_err();
         let message = format!("{error:#}");
         assert!(
             message.starts_with("benchmark 'demo' query 'q-banned': "),
@@ -1140,6 +1157,25 @@ mod tests {
         // The inner message keeps the executed query.
         assert!(message.contains("fake cannot run query"), "{message}");
         assert!(message.contains("#0(X, Y)"), "{message}");
+    }
+
+    /// The preflight's load is the one the subject keeps, so an engine
+    /// copies each query's relations in once. `space` is all that is asked,
+    /// and the fake reports none, so nothing is timed.
+    #[test]
+    fn an_engine_loads_each_query_once() {
+        use super::super::engine::test_support::take_loads;
+        let _ = take_loads();
+        run_on_fake(
+            "edge",
+            &[
+                ("pairs", "Q(X, Y) :- edge(X, Y)."),
+                ("loops", "Q(X) :- edge(X, X)."),
+            ],
+            &[Metric::Space],
+        )
+        .unwrap();
+        assert_eq!(take_loads(), 2, "one load per query");
     }
 
     #[cfg(feature = "engine-duckdb")]

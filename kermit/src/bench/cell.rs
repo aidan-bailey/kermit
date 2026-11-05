@@ -2,8 +2,8 @@
 //! and `bench probe` run one cell over a prepared workload, and the runner
 //! (`run_benchmark`) asks a cell for exactly what differs between cells: its
 //! labels and report axes, its Criterion group segment, the trie-level policy
-//! its queries are prepared under, the metrics it supports, a fallible
-//! preflight, and the [`Subject`] it builds for one prepared query. Everything
+//! its queries are prepared under, the metrics it supports, and the
+//! [`Subject`] it builds, fallibly, for one prepared query. Everything
 //! else (validation, `--verify`, `ReportSink`, group naming, the describe step
 //! and `measure`) stays one copy in the runner.
 //!
@@ -59,15 +59,14 @@ pub(crate) trait Cell {
     /// metrics a cell supports.
     fn supports(&self, metric: Metric) -> bool;
 
-    /// Untimed and fallible, once per query, before the describe step. A no-op
-    /// for kermit cells. `count` is false when the memory guard skips
-    /// `materialize` for a non-streaming subject; the engine then runs `load`
-    /// and `build` only.
-    fn preflight(&self, catalog: &Catalog, prepared: &Prepared, count: bool) -> anyhow::Result<()>;
-
-    /// The subject for one prepared query over `catalog`.
+    /// The subject for one prepared query over `catalog`: untimed, fallible,
+    /// once per query, before the describe step. An engine cell runs its
+    /// preflight here (see `EngineCell`), so that a failure is the cell's
+    /// error rather than a panic in a timed body; a kermit cell cannot fail.
+    /// `count` is false when the memory guard skips `materialize` for a
+    /// non-streaming subject: the preflight then loads and builds only.
     fn subject<'a>(
-        &'a self, catalog: &'a Catalog, prepared: &'a Prepared,
+        &'a self, catalog: &'a Catalog, prepared: &'a Prepared, count: bool,
     ) -> anyhow::Result<Self::Subject<'a>>;
 
     /// Axes read from the query's subject, merged into that query's report axes
@@ -156,14 +155,8 @@ impl<F: ExecutionFamily> Cell for FamilyCell<'_, F> {
 
     fn supports(&self, _metric: Metric) -> bool { true }
 
-    fn preflight(
-        &self, _catalog: &Catalog, _prepared: &Prepared, _count: bool,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     fn subject<'a>(
-        &'a self, catalog: &'a Catalog, prepared: &'a Prepared,
+        &'a self, catalog: &'a Catalog, prepared: &'a Prepared, _count: bool,
     ) -> anyhow::Result<QuerySubject<'a, F>> {
         Ok(QuerySubject {
             family: self.0,
@@ -290,8 +283,8 @@ mod tests {
             assert!(cell.supports(metric), "{metric:?}");
         }
         let (catalog, prepared) = two_hops(TrieLevels::All);
-        cell.preflight(&catalog, &prepared, true).unwrap();
-        cell.preflight(&catalog, &prepared, false).unwrap();
+        cell.subject(&catalog, &prepared, true).unwrap();
+        cell.subject(&catalog, &prepared, false).unwrap();
     }
 
     #[test]
@@ -299,7 +292,7 @@ mod tests {
         let family = TrieLftj::<TreeTrie>::new(Default::default());
         let cell = FamilyCell(&family);
         let (catalog, prepared) = two_hops(TrieLevels::All);
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         assert!(cell.subject_axes(&subject).is_empty());
         const {
             assert!(<FamilyCell<'_, TrieLftj<TreeTrie>> as Cell>::PER_INDEX_BYTES);
@@ -311,7 +304,7 @@ mod tests {
         let family = TrieLftj::<TreeTrie>::new(Default::default());
         let cell = FamilyCell(&family);
         let (catalog, prepared) = two_hops(TrieLevels::All);
-        let subject = cell.subject(&catalog, &prepared).unwrap();
+        let subject = cell.subject(&catalog, &prepared, true).unwrap();
         let described = Described::new(&subject, true);
         assert_eq!(described.rows(), Some(1), "only 1 → 2 → 3");
         assert_eq!(described.bytes().len(), prepared.indexes().len());
