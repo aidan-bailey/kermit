@@ -6,36 +6,23 @@ use {
     kermit_iters::{HashStrategy, KeyedIterable, RowId, Tuples},
 };
 
-/// The rows a probe lends: one bucket's chain, each row kept only if its key
-/// columns equal the probe's key. A key of no columns has no chains, so it
-/// walks every row in order.
-struct Probe<'a> {
+/// The rows of one bucket's chain whose key columns equal the probe's key.
+struct Chain<'a> {
     rows: &'a Tuples,
-    /// The index's per-row links; unused (and empty) for a key of no columns.
+    /// The index's per-row links.
     links: &'a [RowId],
     key: &'a [usize],
-    /// The next row to consider, or `NIL`.
+    /// The next row of the chain, or `NIL`.
     at: RowId,
 }
 
-impl<'a> Iterator for Probe<'a> {
+impl<'a> Iterator for Chain<'a> {
     type Item = &'a [usize];
 
     fn next(&mut self) -> Option<&'a [usize]> {
-        let rows: &'a Tuples = self.rows;
         while self.at != NIL {
-            let position = self.at as usize;
-            let row = rows.row(self.at);
-            self.at = if self.key.is_empty() {
-                // No key columns, no chains: every row, in order.
-                if position + 1 < rows.len() {
-                    self.at + 1
-                } else {
-                    NIL
-                }
-            } else {
-                self.links[position]
-            };
+            let row = self.rows.row(self.at);
+            self.at = self.links[self.at as usize];
             // Other keys share the bucket: only a row whose key columns equal
             // the probe's key is lent.
             if row.starts_with(self.key) {
@@ -46,6 +33,24 @@ impl<'a> Iterator for Probe<'a> {
     }
 }
 
+/// What a probe lends: every row of an index with no key columns, which has
+/// no chains, or else the matching rows of one bucket's chain.
+enum Probe<'a, Every> {
+    Every(Every),
+    Chain(Chain<'a>),
+}
+
+impl<'a, Every: Iterator<Item = &'a [usize]>> Iterator for Probe<'a, Every> {
+    type Item = &'a [usize];
+
+    fn next(&mut self) -> Option<&'a [usize]> {
+        match self {
+            | Self::Every(rows) => rows.next(),
+            | Self::Chain(chain) => chain.next(),
+        }
+    }
+}
+
 impl<H: HashStrategy> KeyedIterable for HashIndex<H> {
     fn key_len(&self) -> usize { self.key_len }
 
@@ -53,7 +58,8 @@ impl<H: HashStrategy> KeyedIterable for HashIndex<H> {
     fn scan(&self) -> impl Iterator<Item = &[usize]> + '_ { self.rows.rows() }
 
     /// Hashes `key`, then walks the bucket's chain, which holds its rows in
-    /// source order. Allocates nothing.
+    /// source order; an empty key lends every row instead. Allocates
+    /// nothing.
     fn probe<'a>(&'a self, key: &'a [usize]) -> impl Iterator<Item = &'a [usize]> + 'a {
         assert_eq!(
             key.len(),
@@ -62,20 +68,14 @@ impl<H: HashStrategy> KeyedIterable for HashIndex<H> {
             key.len(),
             self.key_len
         );
-        let at = if self.key_len == 0 {
-            if self.rows.is_empty() {
-                NIL
-            } else {
-                0
-            }
-        } else {
-            self.directory[self.bucket(key)]
-        };
-        Probe {
+        if key.is_empty() {
+            return Probe::Every(self.rows.rows());
+        }
+        Probe::Chain(Chain {
             rows: &self.rows,
             links: &self.next,
             key,
-            at,
-        }
+            at: self.directory[self.bucket(key)],
+        })
     }
 }
