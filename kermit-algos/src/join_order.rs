@@ -127,11 +127,10 @@ impl<'a> Joiner<'a> {
     /// Joins `atom`: its key is the variables already bound, and it binds
     /// the rest, in the order of `V`.
     fn join(&mut self, atom: usize) {
-        let (plan, atom_vars): (&'a [usize], &'a [Vec<usize>]) = (self.plan, self.atom_vars);
-        let vars = &atom_vars[atom];
+        let vars = &self.atom_vars[atom];
         let key_len = self.bound_in(atom);
         self.key_lens.push(key_len);
-        for &v in plan {
+        for &v in self.plan {
             if vars.contains(&v) && !self.bound[v] {
                 self.bound[v] = true;
                 self.ordering.push(v);
