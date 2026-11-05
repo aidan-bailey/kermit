@@ -142,6 +142,7 @@ fn dispatch_engine_bench(
                 let cell = EngineCell::<DuckDb> {
                     settings: DuckDbSettings {
                         threads: choice.threads,
+                        ..DuckDbSettings::default()
                     },
                 };
                 run_engine_cell(&cell, workload, settings, sink)

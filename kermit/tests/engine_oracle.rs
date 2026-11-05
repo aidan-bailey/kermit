@@ -114,6 +114,16 @@ mod duckdb_cells {
         },
     };
 
+    /// Settings on `threads` threads whose spill directories go under the
+    /// system's temporary directory: these fixtures spill nothing, and their
+    /// directories do not belong in the user's cache.
+    fn settings(threads: usize) -> DuckDbSettings {
+        DuckDbSettings {
+            threads,
+            spill_parent: std::env::temp_dir(),
+        }
+    }
+
     /// Loads and builds `case` on DuckDB and hands `check` the built state and
     /// the multiplicity of the case's all-constant atoms (DuckDB keeps
     /// duplicates, so each one multiplies).
@@ -149,7 +159,7 @@ mod duckdb_cells {
     #[test]
     fn duckdb_returns_the_oracles_full_assignments() {
         for case in cases() {
-            on_duckdb(&case, &DuckDbSettings::default(), |built, multiplicity| {
+            on_duckdb(&case, &settings(1), |built, multiplicity| {
                 assert_eq!(
                     rows_of(built, multiplicity, &case.label),
                     case.bag,
@@ -163,7 +173,7 @@ mod duckdb_cells {
     #[test]
     fn duckdb_streams_the_oracles_bag_count() {
         for case in cases() {
-            on_duckdb(&case, &DuckDbSettings::default(), |built, multiplicity| {
+            on_duckdb(&case, &settings(1), |built, multiplicity| {
                 let streamed =
                     DuckDb::stream(built).unwrap_or_else(|e| panic!("{}: {e}", case.label));
                 assert_eq!(
@@ -185,7 +195,7 @@ mod duckdb_cells {
     #[test]
     fn duckdb_materializes_the_oracles_distinct_count() {
         for case in cases() {
-            on_duckdb(&case, &DuckDbSettings::default(), |built, multiplicity| {
+            on_duckdb(&case, &settings(1), |built, multiplicity| {
                 // A check that holds nowhere means no rows, and the lifecycle
                 // never asks the engine then.
                 let materialized = if multiplicity == 0 {
@@ -232,20 +242,14 @@ mod duckdb_cells {
             "mixed-constants-and-repeats",
         ];
         for case in cases().iter().filter(|case| shapes.contains(&case.shape)) {
-            on_duckdb(
-                case,
-                &DuckDbSettings {
-                    threads: 2,
-                },
-                |built, multiplicity| {
-                    assert_eq!(
-                        rows_of(built, multiplicity, &case.label),
-                        case.bag,
-                        "{} on two threads",
-                        case.label
-                    );
-                },
-            );
+            on_duckdb(case, &settings(2), |built, multiplicity| {
+                assert_eq!(
+                    rows_of(built, multiplicity, &case.label),
+                    case.bag,
+                    "{} on two threads",
+                    case.label
+                );
+            });
         }
     }
 }
