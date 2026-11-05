@@ -114,6 +114,16 @@ mod duckdb_cells {
         },
     };
 
+    /// Settings on `threads` threads whose spill directories go under the
+    /// system's temporary directory: these fixtures spill nothing, and their
+    /// directories do not belong in the user's cache.
+    fn settings(threads: usize) -> DuckDbSettings {
+        DuckDbSettings {
+            threads,
+            spill_parent: std::env::temp_dir(),
+        }
+    }
+
     /// Loads and builds `case` on DuckDB and hands `check` the built state and
     /// the multiplicity of the case's all-constant atoms (DuckDB keeps
     /// duplicates, so each one multiplies).
@@ -123,10 +133,13 @@ mod duckdb_cells {
         let label = &case.label;
         let loaded = DuckDb::load(settings, &case.catalog, &case.prepared)
             .unwrap_or_else(|e| panic!("{label}: {e}"));
-        let built = DuckDb::build(&loaded, &case.catalog, &case.prepared)
-            .unwrap_or_else(|e| panic!("{label}: {e}"));
-        let multiplicity =
-            check_multiplicity(&case.catalog, &case.prepared, DuckDb::KEEPS_DUPLICATES);
+        let built =
+            DuckDb::build(&loaded, &case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let multiplicity = check_multiplicity(
+            &case.catalog,
+            &case.prepared,
+            DuckDb::CAPABILITIES.keeps_duplicates,
+        );
         check(&built, multiplicity);
     }
 
@@ -146,7 +159,7 @@ mod duckdb_cells {
     #[test]
     fn duckdb_returns_the_oracles_full_assignments() {
         for case in cases() {
-            on_duckdb(&case, &DuckDbSettings::default(), |built, multiplicity| {
+            on_duckdb(&case, &settings(1), |built, multiplicity| {
                 assert_eq!(
                     rows_of(built, multiplicity, &case.label),
                     case.bag,
@@ -160,7 +173,7 @@ mod duckdb_cells {
     #[test]
     fn duckdb_streams_the_oracles_bag_count() {
         for case in cases() {
-            on_duckdb(&case, &DuckDbSettings::default(), |built, multiplicity| {
+            on_duckdb(&case, &settings(1), |built, multiplicity| {
                 let streamed =
                     DuckDb::stream(built).unwrap_or_else(|e| panic!("{}: {e}", case.label));
                 assert_eq!(
@@ -182,7 +195,7 @@ mod duckdb_cells {
     #[test]
     fn duckdb_materializes_the_oracles_distinct_count() {
         for case in cases() {
-            on_duckdb(&case, &DuckDbSettings::default(), |built, multiplicity| {
+            on_duckdb(&case, &settings(1), |built, multiplicity| {
                 // A check that holds nowhere means no rows, and the lifecycle
                 // never asks the engine then.
                 let materialized = if multiplicity == 0 {
@@ -229,20 +242,14 @@ mod duckdb_cells {
             "mixed-constants-and-repeats",
         ];
         for case in cases().iter().filter(|case| shapes.contains(&case.shape)) {
-            on_duckdb(
-                case,
-                &DuckDbSettings {
-                    threads: 2,
-                },
-                |built, multiplicity| {
-                    assert_eq!(
-                        rows_of(built, multiplicity, &case.label),
-                        case.bag,
-                        "{} on two threads",
-                        case.label
-                    );
-                },
-            );
+            on_duckdb(case, &settings(2), |built, multiplicity| {
+                assert_eq!(
+                    rows_of(built, multiplicity, &case.label),
+                    case.bag,
+                    "{} on two threads",
+                    case.label
+                );
+            });
         }
     }
 }
@@ -289,10 +296,12 @@ mod nemo_cells {
         Nemo::supports(&case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
         let loaded = Nemo::load(&(), &case.catalog, &case.prepared)
             .unwrap_or_else(|e| panic!("{label}: {e}"));
-        let built = Nemo::build(&loaded, &case.catalog, &case.prepared)
-            .unwrap_or_else(|e| panic!("{label}: {e}"));
-        let multiplicity =
-            check_multiplicity(&case.catalog, &case.prepared, Nemo::KEEPS_DUPLICATES);
+        let built = Nemo::build(&loaded, &case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let multiplicity = check_multiplicity(
+            &case.catalog,
+            &case.prepared,
+            Nemo::CAPABILITIES.keeps_duplicates,
+        );
         check(&built, multiplicity);
     }
 
@@ -374,12 +383,12 @@ mod nemo_cells {
         let mut want = oracle::<HashTrieSip>(relations, &full_query(query, &prepared));
         want.dedup();
         Nemo::supports(&prepared).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
-        if check_multiplicity(catalog, &prepared, Nemo::KEEPS_DUPLICATES) == 0 {
+        if check_multiplicity(catalog, &prepared, Nemo::CAPABILITIES.keeps_duplicates) == 0 {
             return (0, Vec::new(), want);
         }
         let loaded = Nemo::load(&(), catalog, &prepared)
             .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
-        let built = Nemo::build(&loaded, catalog, &prepared)
+        let built = Nemo::build(&loaded, &prepared)
             .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
         let (count, kept) =
             Nemo::materialize(&built).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));

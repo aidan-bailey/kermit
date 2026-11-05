@@ -12,14 +12,15 @@ git revision, with no fork, on the same `Prepared` query the structure cells run
 
 | Phase | What Nemo does | Timed | Notes |
 |---|---|---|---|
-| `load` | Shared `Arc` handles on the catalog's tuples of each relation the query reads | no | |
+| `load` | Shared `Arc` handles on the catalog's tuples of each relation the query reads | no | Once per query: the preflight's load is the one the describe step and every timed sample build from |
 | `build` | A fresh `DatabaseInstance`; per `IndexSpec`, `register_table` and `add_source_external` with a `ViewProvider` that streams the spec's matching rows, output columns only, as integer values; then `load_trie_into_memory` per spec, which sorts, deduplicates and builds the trie. The join plan is built here, in kermit's variable order | yes | One copy of the rows, plus Nemo's sort, deduplication and trie: the same kind of work as `ColumnTrie`'s build |
 | `iteration` | Not offered | | Upstream's streaming join is private; the public `execute_plan` stores its result as a deduplicated trie. The note `{label} does not stream, so it skips iteration and end-to-end` is printed |
-| `materialize` | `execute_plan`, then `count_rows_in_memory` of the stored result | yes, opt-in | Nemo stores the result, so every sample runs on a fresh build in untimed setup (`MATERIALIZE_MUTATES`), as a lazy `HashTrie` does; a second `materialize` on one build panics |
+| `materialize` | `execute_plan`, then `count_rows_in_memory` of the stored result | yes, opt-in | Nemo stores the result, so every sample runs on a fresh build in untimed setup (`materialize_mutates`), as a lazy `HashTrie` does; a second `materialize` on one build panics |
 | `space` | The sum of `table_size_bytes` over the spec tables | exact | Read in the describe step, before anything runs |
 
-`Engine` constants: `NAME` is `"nemo"`, `STREAMS` false, `KEEPS_DUPLICATES` false,
-`MATERIALIZE_MUTATES` true, `HAS_SPACE` true.
+Capabilities (`EngineKind::Nemo.capabilities()`, which `Nemo::CAPABILITIES` is): `name` is
+`"nemo"`, `threaded` false, `streams` false, `keeps_duplicates` false, `materialize_mutates` true,
+`has_space` true.
 
 ## Translation
 
@@ -69,7 +70,8 @@ into canonical order.
   `default`; the feature is `engine-nemo`.
 - `kermit::engine::nemo` exports `NEMO_REV` and `NEMO_PHYSICAL_VERSION`, and `Engine::version`
   returns `nemo-physical {NEMO_PHYSICAL_VERSION} @ {first 12 of NEMO_REV}`, which every Nemo report
-  records as `engine_version`. A unit test pins `NEMO_REV` against the `rev` in `kermit/Cargo.toml`.
+  records as `engine_version`. Unit tests pin `NEMO_REV` against the `rev` in `kermit/Cargo.toml`,
+  and both constants against the workspace `Cargo.lock`'s `nemo-physical` entry.
 - Upstream is nightly-only, and at this revision it needs a rustc of 2026-11-02 or later:
   on the 2026-10-31 nightly it fails with `E0391` (rust-lang/rust#165263, fixed 2026-11-01). The
   flake's `rust-overlay` is locked past that.
@@ -78,7 +80,8 @@ To move the pin:
 1. Change `rev` in the `nemo-physical` dependency of `kermit/Cargo.toml`, then `cargo update -p
    nemo-physical` to rewrite `Cargo.lock`.
 2. Change `NEMO_REV` and `NEMO_PHYSICAL_VERSION` in `kermit/src/engine/nemo.rs` to the new revision
-   and its workspace version. The unit test fails until they agree with `Cargo.toml`.
+   and its workspace version. The unit tests fail until they agree with `Cargo.toml` and
+   `Cargo.lock`.
 3. Re-check the public API the engine uses (`DatabaseInstance::register_table`,
    `add_source_external`, `load_trie_into_memory`, `ExecutionPlan`, `execute_plan`,
    `count_rows_in_memory`, `table_size_bytes`, `TableProvider`, `TupleWriter`): any of them going
@@ -88,9 +91,9 @@ To move the pin:
 
 ## Settings and limits
 
-- `Settings` is `()`: Nemo has no kermit-side setting, and `--engine-threads` does not apply to it
-  (its report carries no `engine_threads`; the flag is a usage error when no DuckDB engine is
-  selected).
+- `Settings` is `()`: Nemo has no kermit-side setting, and its capabilities are not `threaded`, so
+  `--engine-threads` does not apply to it (its report carries no `engine_threads`; the flag is a
+  usage error when no DuckDB engine is selected).
 - An engine cell's preflight error names the benchmark, the query and the engine. `bench join
   --engine` runs the 64-byte Criterion group-name clash check over its kermit and engine cells, as
   `bench run` does.
@@ -105,9 +108,10 @@ To move the pin:
 
 - `kermit/tests/engine_oracle.rs` checks Nemo's counts and contents against the **distinct** rows of
   the nested-loop oracle (distinct full assignments are the same set under set and bag semantics).
-- Unit tests in `kermit/src/engine/nemo.rs` pin `NEMO_REV` against `kermit/Cargo.toml` and check
-  that the join's markers follow kermit's plan order.
-- The `engines` job of `.github/workflows/pr.yml` runs them with `engine-nemo`.
+- Unit tests in `kermit/src/engine/nemo.rs` pin `NEMO_REV` against `kermit/Cargo.toml`, pin both
+  constants against `Cargo.lock`, and check that the join's markers follow kermit's plan order.
+- The `engines` job of `.github/workflows/engines.yml` runs them with `engine-nemo`, on every pull
+  request into master and every push to it.
 
 ## Acceptance probes (2026-11-02)
 

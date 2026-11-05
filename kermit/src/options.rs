@@ -6,6 +6,7 @@
 use {
     crate::IndexStructureSelector,
     clap::{Args, ValueEnum},
+    kermit::engine::EngineKind,
     kermit_algos::{Optimiser, Planner},
     kermit_ds::{
         ChildCapacity, ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig,
@@ -1074,41 +1075,12 @@ impl DsChoices {
     }
 }
 
-/// An external engine `--engine` can add to a `bench run`, `bench probe` or
-/// `bench join`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum EngineSelector {
-    /// DuckDB, in-process (feature `engine-duckdb`).
-    Duckdb,
-    /// Nemo, in-process (feature `engine-nemo`).
-    Nemo,
-}
-
-impl EngineSelector {
-    /// The flag value, which is also the cargo feature's suffix
-    /// (`engine-{name}`).
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            | Self::Duckdb => "duckdb",
-            | Self::Nemo => "nemo",
-        }
-    }
-
-    /// Whether this build compiled the engine in.
-    pub(crate) fn compiled(self) -> bool {
-        match self {
-            | Self::Duckdb => cfg!(feature = "engine-duckdb"),
-            | Self::Nemo => cfg!(feature = "engine-nemo"),
-        }
-    }
-
-    /// The usage error for an engine whose feature this build lacks.
-    pub(crate) fn missing_feature(self) -> anyhow::Error {
-        let name = self.name();
-        anyhow::anyhow!(
-            "--engine {name} needs the engine-{name} feature (build with --features engine-{name})"
-        )
-    }
+/// The usage error for `--engine {name}` in a build that lacks its feature.
+pub(crate) fn missing_feature(engine: EngineKind) -> anyhow::Error {
+    let name = engine.capabilities().name;
+    anyhow::anyhow!(
+        "--engine {name} needs the engine-{name} feature (build with --features engine-{name})"
+    )
 }
 
 /// `--engine` and `--engine-threads`: the engines a run adds beside its `-i` /
@@ -1121,7 +1093,7 @@ pub(crate) struct EngineChoices {
     /// repeated (`duckdb`, `nemo`). An engine whose cargo feature is not
     /// compiled in is a usage error.
     #[arg(long, value_name = "ENGINE", value_enum, value_delimiter = ',')]
-    pub(crate) engine: Vec<EngineSelector>,
+    pub(crate) engine: Vec<EngineKind>,
 
     /// DuckDB's thread count: 1 (the default) up to the available
     /// parallelism. Applies to `--engine duckdb` only, since Nemo is
@@ -1133,37 +1105,25 @@ pub(crate) struct EngineChoices {
 /// One resolved `--engine` cell.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EngineChoice {
-    pub(crate) engine: EngineSelector,
-    /// `--engine-threads`; only DuckDB reads it.
+    pub(crate) engine: EngineKind,
+    /// `--engine-threads`; only an engine that takes a thread count
+    /// ([`Capabilities::threaded`](kermit::engine::Capabilities::threaded))
+    /// reads it.
     pub(crate) threads: usize,
 }
 
 impl EngineChoice {
-    /// The Criterion group's last segment and the stderr label, as
-    /// `Engine::label` spells them: `duckdb-t{threads}`, `nemo`. Written out
-    /// here so that a build without the engine's feature can still name its
-    /// group; a feature-gated test pins the two together.
-    pub(crate) fn label(self) -> String {
-        match self.engine {
-            | EngineSelector::Duckdb => format!("duckdb-t{}", self.threads),
-            | EngineSelector::Nemo => "nemo".to_string(),
-        }
-    }
+    /// The Criterion group's last segment and the stderr label:
+    /// `duckdb-t{threads}`, `nemo`. Read off the engine's capabilities, as its
+    /// `EngineCell` names itself, so that a build without the engine's feature
+    /// names the same group.
+    pub(crate) fn label(self) -> String { self.engine.capabilities().label(self.threads) }
 
-    /// Whether the engine measures `metric`, as `Cell::supports` answers for
-    /// its `EngineCell`: DuckDB streams and reports no space, Nemo stores its
-    /// result and reports space. Written out here, like [`label`](Self::label),
-    /// so that the sweep's group clash check can ask without the engine's
-    /// feature; feature-gated tests in `bench::run` pin the two together.
+    /// Whether the engine measures `metric`, by the rule its `EngineCell`
+    /// answers `Cell::supports` with ([`Metric::measured_by`]), so that the
+    /// sweep's group clash check can ask without the engine's feature.
     pub(crate) fn supports(self, metric: crate::bench::Metric) -> bool {
-        use crate::bench::Metric;
-        match (self.engine, metric) {
-            | (_, Metric::Build | Metric::Materialize) => true,
-            | (EngineSelector::Duckdb, Metric::Iteration | Metric::EndToEnd) => true,
-            | (EngineSelector::Nemo, Metric::Iteration | Metric::EndToEnd) => false,
-            | (EngineSelector::Duckdb, Metric::Space) => false,
-            | (EngineSelector::Nemo, Metric::Space) => true,
-        }
+        metric.measured_by(&self.engine.capabilities())
     }
 }
 
@@ -1184,11 +1144,17 @@ impl EngineChoices {
     /// [`resolve`](Self::resolve) for a machine with `available` hardware
     /// threads.
     fn resolve_within(&self, available: usize) -> anyhow::Result<Vec<EngineChoice>> {
-        let duckdb = self.engine.contains(&EngineSelector::Duckdb);
-        if self.engine_threads.is_some() && !duckdb {
+        let threaded = |engine: &EngineKind| engine.capabilities().threaded;
+        if self.engine_threads.is_some() && !self.engine.iter().any(threaded) {
+            let names: Vec<&str> = EngineKind::value_variants()
+                .iter()
+                .filter(|engine| threaded(engine))
+                .map(|engine| engine.capabilities().name)
+                .collect();
+            let names = names.join(" or --engine ");
             anyhow::bail!(
-                "--engine-threads applies to --engine duckdb only (Nemo is single-threaded), but \
-                 this run names no --engine duckdb"
+                "--engine-threads applies to --engine {names} only (every other engine is \
+                 single-threaded), but this run names no --engine {names}"
             );
         }
         if self.engine.is_empty() {
@@ -1198,14 +1164,14 @@ impl EngineChoices {
         if !(1..=available).contains(&threads) {
             anyhow::bail!("--engine-threads must be between 1 and {available}");
         }
-        let mut selected: Vec<EngineSelector> = Vec::new();
+        let mut selected: Vec<EngineKind> = Vec::new();
         for &engine in &self.engine {
             if !selected.contains(&engine) {
                 selected.push(engine);
             }
         }
-        if let Some(missing) = selected.iter().find(|engine| !engine.compiled()) {
-            return Err(missing.missing_feature());
+        if let Some(&missing) = selected.iter().find(|engine| !engine.compiled()) {
+            return Err(missing_feature(missing));
         }
         Ok(selected
             .into_iter()
@@ -1248,17 +1214,11 @@ mod tests {
         assert_eq!(none.engine_threads, None);
 
         let both = engine_choices(&["--engine", "duckdb,nemo", "--engine-threads", "2"]);
-        assert_eq!(both.engine, vec![
-            EngineSelector::Duckdb,
-            EngineSelector::Nemo
-        ]);
+        assert_eq!(both.engine, vec![EngineKind::Duckdb, EngineKind::Nemo]);
         assert_eq!(both.engine_threads, Some(2));
 
         let repeated = engine_choices(&["--engine", "nemo", "--engine", "duckdb"]);
-        assert_eq!(repeated.engine, vec![
-            EngineSelector::Nemo,
-            EngineSelector::Duckdb
-        ]);
+        assert_eq!(repeated.engine, vec![EngineKind::Nemo, EngineKind::Duckdb]);
 
         assert!(EngineCli::try_parse_from(["kermit", "--engine", "umbra"]).is_err());
     }
@@ -1272,7 +1232,7 @@ mod tests {
     /// before its range is looked at (0 would otherwise be a range error).
     #[test]
     fn engine_threads_without_a_duckdb_engine_is_refused() {
-        for engine in [vec![], vec![EngineSelector::Nemo]] {
+        for engine in [vec![], vec![EngineKind::Nemo]] {
             for threads in [0, 2] {
                 let choices = EngineChoices {
                     engine: engine.clone(),
@@ -1280,8 +1240,8 @@ mod tests {
                 };
                 assert_eq!(
                     choices.resolve_within(4).unwrap_err().to_string(),
-                    "--engine-threads applies to --engine duckdb only (Nemo is single-threaded), \
-                     but this run names no --engine duckdb"
+                    "--engine-threads applies to --engine duckdb only (every other engine is \
+                     single-threaded), but this run names no --engine duckdb"
                 );
             }
         }
@@ -1294,13 +1254,13 @@ mod tests {
     #[test]
     fn engine_threads_with_a_duckdb_engine_is_accepted() {
         let choices = EngineChoices {
-            engine: vec![EngineSelector::Duckdb, EngineSelector::Nemo],
+            engine: vec![EngineKind::Duckdb, EngineKind::Nemo],
             engine_threads: Some(2),
         };
         let cells = choices.resolve_within(4).unwrap();
         assert_eq!(cells[0].threads, 2);
-        assert_eq!(cells[0].engine, EngineSelector::Duckdb);
-        assert_eq!(cells[1].engine, EngineSelector::Nemo);
+        assert_eq!(cells[0].engine, EngineKind::Duckdb);
+        assert_eq!(cells[1].engine, EngineKind::Nemo);
         assert_eq!(cells[1].threads, 2);
     }
 
@@ -1308,7 +1268,7 @@ mod tests {
     fn engine_threads_outside_one_to_the_available_parallelism_is_refused() {
         for threads in [0, 5] {
             let choices = EngineChoices {
-                engine: vec![EngineSelector::Duckdb],
+                engine: vec![EngineKind::Duckdb],
                 engine_threads: Some(threads),
             };
             assert_eq!(
@@ -1324,8 +1284,8 @@ mod tests {
             engine: vec![engine],
             engine_threads: None,
         };
-        for engine in [EngineSelector::Duckdb, EngineSelector::Nemo] {
-            let name = engine.name();
+        for engine in [EngineKind::Duckdb, EngineKind::Nemo] {
+            let name = engine.capabilities().name;
             let resolved = choices(engine).resolve_within(4);
             if engine.compiled() {
                 assert_eq!(resolved.unwrap(), vec![EngineChoice {
@@ -1346,7 +1306,7 @@ mod tests {
 
     #[test]
     fn a_repeated_engine_resolves_once_in_first_given_order() {
-        let engine = [EngineSelector::Nemo, EngineSelector::Duckdb]
+        let engine = [EngineKind::Nemo, EngineKind::Duckdb]
             .into_iter()
             .find(|engine| engine.compiled());
         // Without an engine feature there is nothing to resolve here.
@@ -1366,47 +1326,40 @@ mod tests {
     #[test]
     fn a_choice_names_its_criterion_segment_and_stderr_label() {
         let duckdb = EngineChoice {
-            engine: EngineSelector::Duckdb,
+            engine: EngineKind::Duckdb,
             threads: 4,
         };
         let nemo = EngineChoice {
-            engine: EngineSelector::Nemo,
+            engine: EngineKind::Nemo,
             threads: 4,
         };
         assert_eq!(duckdb.label(), "duckdb-t4");
         assert_eq!(nemo.label(), "nemo");
     }
 
-    /// The label is spelled twice, here (so a build without the feature can
-    /// name a group) and by `Engine::label`; they must agree.
-    #[cfg(feature = "engine-duckdb")]
+    /// What a choice measures is its capabilities' rule, with no engine
+    /// type to ask: DuckDB streams and reports no space, Nemo the reverse.
     #[test]
-    fn the_duckdb_choice_label_is_the_engines_label() {
-        use kermit::engine::{
-            duckdb::{DuckDb, DuckDbSettings},
-            Engine,
-        };
-        let choice = EngineChoice {
-            engine: EngineSelector::Duckdb,
-            threads: 3,
-        };
-        assert_eq!(
-            choice.label(),
-            DuckDb::label(&DuckDbSettings {
-                threads: 3
-            })
-        );
-    }
-
-    #[cfg(feature = "engine-nemo")]
-    #[test]
-    fn the_nemo_choice_label_is_the_engines_label() {
-        use kermit::engine::{nemo::Nemo, Engine};
-        let choice = EngineChoice {
-            engine: EngineSelector::Nemo,
+    fn a_choice_measures_what_its_capabilities_allow() {
+        use crate::bench::Metric;
+        let choice = |engine| EngineChoice {
+            engine,
             threads: 1,
         };
-        assert_eq!(choice.label(), Nemo::label(&()));
+        let (duckdb, nemo) = (choice(EngineKind::Duckdb), choice(EngineKind::Nemo));
+        for metric in [Metric::Build, Metric::Materialize] {
+            assert!(
+                duckdb.supports(metric) && nemo.supports(metric),
+                "{metric:?}"
+            );
+        }
+        for metric in [Metric::Iteration, Metric::EndToEnd] {
+            assert!(
+                duckdb.supports(metric) && !nemo.supports(metric),
+                "{metric:?}"
+            );
+        }
+        assert!(!duckdb.supports(Metric::Space) && nemo.supports(Metric::Space));
     }
 
     /// Every `--ds-layout-hasher` choice names exactly one `HashStrategy`

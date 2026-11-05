@@ -16,7 +16,7 @@
 //!   variable order.
 //! - **`materialize`** (timed, opt-in): `execute_plan` stores the result as a
 //!   deduplicated trie and `count_rows_in_memory` counts it. Nemo stores its
-//!   result, so one build can be materialised once (`MATERIALIZE_MUTATES`).
+//!   result, so one build can be materialised once (`materialize_mutates`).
 //! - **`space`**: Nemo's own `table_size_bytes` over the spec tables, read
 //!   after loading. It leaves out the dictionary entries that keys above
 //!   `i64::MAX` take: Nemo stores those through its dictionary, and
@@ -26,12 +26,12 @@
 //!   `iteration` and `end_to_end` are not offered.
 //!
 //! Nemo has set semantics (its loader and its result trie deduplicate), so
-//! `KEEPS_DUPLICATES` is false. It answers the full conjunctive query, whose
+//! `keeps_duplicates` is false. It answers the full conjunctive query, whose
 //! distinct rows are the same under set and bag semantics. It runs on one
 //! thread and reports no thread count.
 
 use {
-    super::{Engine, EngineError, Unsupported},
+    super::{indexed_relations, Capabilities, Engine, EngineError, EngineKind, Unsupported},
     crate::db::{Catalog, Prepared},
     kermit_algos::IndexSpec,
     kermit_ds::{Filter, TupleView, Tuples},
@@ -52,7 +52,7 @@ use {
     },
     std::{
         cell::{Cell, RefCell},
-        collections::{btree_map::Entry, BTreeMap},
+        collections::BTreeMap,
         fmt,
         sync::{Arc, Mutex, MutexGuard, PoisonError},
     },
@@ -62,20 +62,14 @@ use {
 /// compares the two, so a move of the pin changes both or fails.
 pub const NEMO_REV: &str = "04f0962b91edc1bbe73e6f65f08d41d1ee491980";
 
-/// The workspace version of `nemo-physical` at [`NEMO_REV`]. Moving the pin
-/// means reading the new revision's version here.
+/// The workspace version of `nemo-physical` at [`NEMO_REV`], as the workspace's
+/// `Cargo.lock` records it. A unit test compares the two, so moving the pin
+/// means updating this too.
 pub const NEMO_PHYSICAL_VERSION: &str = "0.10.2-dev";
 
-/// The engine's name: the report's `system` axis, and the `engine` of its
-/// errors.
-const ENGINE: &str = "nemo";
-
-/// An error of this engine.
-fn failure(message: impl fmt::Display) -> EngineError {
-    EngineError {
-        engine: ENGINE,
-        message: message.to_string(),
-    }
+/// An error of this engine, its message as written.
+fn error(message: impl fmt::Display) -> EngineError {
+    EngineError::new(Nemo::CAPABILITIES.name, message)
 }
 
 /// Held across every call into `nemo-physical` that times itself.
@@ -106,7 +100,7 @@ pub struct NemoLoaded {
 /// the join plan that has not run.
 ///
 /// Running the plan changes the database (Nemo stores its result), so a build
-/// can be materialised once, and `Nemo::MATERIALIZE_MUTATES` is true. The
+/// can be materialised once, and its `materialize_mutates` is true. The
 /// database and the plan sit behind `RefCell`s and the outcome in a `Cell`
 /// because `Engine::materialize` and `Engine::rows` take `&Self::Built`.
 pub struct NemoBuilt {
@@ -144,15 +138,9 @@ impl Engine for Nemo {
     type Loaded = NemoLoaded;
     type Settings = ();
 
-    const HAS_SPACE: bool = true;
-    const KEEPS_DUPLICATES: bool = false;
-    const MATERIALIZE_MUTATES: bool = true;
-    const NAME: &'static str = ENGINE;
-    const STREAMS: bool = false;
+    const CAPABILITIES: Capabilities = EngineKind::Nemo.capabilities();
 
-    fn label(_settings: &()) -> String { ENGINE.to_string() }
-
-    fn threads(_settings: &()) -> Option<usize> { None }
+    fn threads(_settings: &()) -> usize { 1 }
 
     fn version(_loaded: &NemoLoaded) -> String {
         format!(
@@ -170,13 +158,11 @@ impl Engine for Nemo {
         _settings: &(), catalog: &Catalog, prepared: &Prepared,
     ) -> Result<NemoLoaded, EngineError> {
         let mut relations = BTreeMap::new();
-        for spec in prepared.indexes() {
-            if let Entry::Vacant(slot) = relations.entry(spec.relation.clone()) {
-                let tuples = catalog.shared_tuples(&spec.relation).ok_or_else(|| {
-                    failure(format!("the catalog holds no relation {}", spec.relation))
-                })?;
-                slot.insert(tuples);
-            }
+        for relation in indexed_relations(prepared) {
+            let tuples = catalog
+                .shared_tuples(relation)
+                .ok_or_else(|| error(format!("the catalog holds no relation {relation}")))?;
+            relations.insert(relation.to_string(), tuples);
         }
         Ok(NemoLoaded {
             relations,
@@ -185,14 +171,12 @@ impl Engine for Nemo {
 
     /// The timed build: a fresh database, one table per spec loaded through a
     /// `ViewProvider`, and the join plan.
-    fn build<'l>(
-        loaded: &'l NemoLoaded, _catalog: &Catalog, prepared: &Prepared,
-    ) -> Result<NemoBuilt, EngineError>
+    fn build<'l>(loaded: &'l NemoLoaded, prepared: &Prepared) -> Result<NemoBuilt, EngineError>
     where
         Self: 'l,
     {
         if prepared.indexes().is_empty() {
-            return Err(failure("a query of constant checks has no join to run"));
+            return Err(error("a query of constant checks has no join to run"));
         }
         let markers = plan_markers(prepared)?;
         let mut database = DatabaseInstance::default();
@@ -201,7 +185,7 @@ impl Engine for Nemo {
             let tuples = loaded
                 .relations
                 .get(&spec.relation)
-                .ok_or_else(|| failure(format!("relation {} was not loaded", spec.relation)))?;
+                .ok_or_else(|| error(format!("relation {} was not loaded", spec.relation)))?;
             let table = database.register_table(&format!("idx_{index}"), spec.columns.len());
             let provider = ViewProvider::new(Arc::clone(tuples), spec);
             database.add_source_external(table, ColumnOrder::default(), Box::new(provider));
@@ -217,7 +201,7 @@ impl Engine for Nemo {
                 futures::executor::block_on(
                     database.load_trie_into_memory(table, ColumnOrder::default()),
                 )
-                .map_err(failure)?;
+                .map_err(error)?;
             }
         }
         let (plan, output) = join_plan(&markers, &tables);
@@ -233,8 +217,8 @@ impl Engine for Nemo {
 
     /// Nemo's streaming join is private upstream, so there is none to offer.
     fn stream(_built: &NemoBuilt) -> Result<u64, EngineError> {
-        Err(failure(
-            "Nemo has no streamed join (STREAMS is false); use materialize",
+        Err(error(
+            "Nemo has no streamed join (its capabilities do not stream); use materialize",
         ))
     }
 
@@ -278,9 +262,7 @@ impl Engine for Nemo {
             return Ok(Vec::new());
         };
         let database = built.database.borrow();
-        let stored = database
-            .table_row_iterator_inmemory(table)
-            .map_err(failure)?;
+        let stored = database.table_row_iterator_inmemory(table).map_err(error)?;
         stored
             .map(|values| -> Result<Vec<usize>, EngineError> {
                 let plan_row = values
@@ -314,7 +296,7 @@ impl NemoBuilt {
         let results = {
             let _exclusive = exclusive();
             futures::executor::block_on(self.database.borrow_mut().execute_plan(plan))
-                .map_err(failure)?
+                .map_err(error)?
         };
         let outcome = match results.get(&self.output) {
             | Some(&table) => Outcome::Table(table),
@@ -366,7 +348,7 @@ fn plan_markers(prepared: &Prepared) -> Result<PlanMarkers, EngineError> {
         let mut markers = Vec::with_capacity(atom.terms.len());
         for term in &atom.terms {
             let Term::Var(name) = term else {
-                return Err(failure(format!(
+                return Err(error(format!(
                     "atom {atom} holds {term}, which is not a variable"
                 )));
             };
@@ -374,13 +356,13 @@ fn plan_markers(prepared: &Prepared) -> Result<PlanMarkers, EngineError> {
                 .iter()
                 .position(|bound| bound == name)
                 .ok_or_else(|| {
-                    failure(format!("variable {name} of atom {atom} is not in the plan"))
+                    error(format!("variable {name} of atom {atom} is not in the plan"))
                 })?;
             markers.push(position);
         }
         let columns = prepared.indexes()[index].columns.len();
         if markers.len() != columns || !markers.windows(2).all(|pair| pair[0] < pair[1]) {
-            return Err(failure(format!(
+            return Err(error(format!(
                 "atom {atom} does not list its {columns} variables in plan order"
             )));
         }
@@ -441,7 +423,7 @@ fn integer(value: &AnyDataValue) -> Result<usize, EngineError> {
                 .flatten()
         })
         .and_then(|id| usize::try_from(id).ok())
-        .ok_or_else(|| failure(format!("result value {value:?} is not an id")))
+        .ok_or_else(|| error(format!("result value {value:?} is not an id")))
 }
 
 /// One index spec's view of a relation, written into Nemo's loader as unsigned
@@ -564,6 +546,26 @@ mod tests {
         );
     }
 
+    /// The lockfile's `nemo-physical` entry is the one this build compiled: it
+    /// holds the version `version` reports, from the pinned revision.
+    #[test]
+    fn the_reported_version_is_the_lockfiles() {
+        let lockfile = include_str!("../../../Cargo.lock");
+        let package = lockfile
+            .split("[[package]]")
+            .find(|package| package.contains("\nname = \"nemo-physical\"\n"))
+            .expect("Cargo.lock locks nemo-physical");
+        assert!(
+            package.contains(&format!("\nversion = \"{NEMO_PHYSICAL_VERSION}\"\n")),
+            "NEMO_PHYSICAL_VERSION ({NEMO_PHYSICAL_VERSION}) is not the version Cargo.lock \
+             locks:{package}"
+        );
+        assert!(
+            package.contains(&format!("#{NEMO_REV}\"")),
+            "Cargo.lock does not lock nemo-physical at NEMO_REV ({NEMO_REV}):{package}"
+        );
+    }
+
     /// R(X, P), S(X, Y), T(Y): X and Y are join keys and P is payload, so the
     /// lexicographic plan binds X, Y, P while the query's canonical order is X,
     /// P, Y. A marker is a plan position, so R's markers are X's 0 and P's 2,
@@ -625,7 +627,7 @@ mod tests {
         let prepared = prepared_for(&c, text);
         Nemo::supports(&prepared).expect("Nemo runs the query");
         let loaded = Nemo::load(&(), &c, &prepared).expect("the relations load");
-        Nemo::build(&loaded, &c, &prepared).expect("the build succeeds")
+        Nemo::build(&loaded, &prepared).expect("the build succeeds")
     }
 
     /// The `materialize` count and the sorted `rows` of `text` over `relations`
@@ -650,9 +652,9 @@ mod tests {
 
     #[test]
     fn its_labels_and_version_are_fixed() {
-        assert_eq!(Nemo::NAME, "nemo");
-        assert_eq!(Nemo::label(&()), "nemo");
-        assert_eq!(Nemo::threads(&()), None);
+        assert_eq!(Nemo::CAPABILITIES, EngineKind::Nemo.capabilities());
+        assert_eq!(Nemo::CAPABILITIES.label(Nemo::threads(&())), "nemo");
+        assert_eq!(Nemo::threads(&()), 1);
         let loaded = NemoLoaded {
             relations: BTreeMap::new(),
         };
@@ -853,7 +855,7 @@ mod tests {
         let prepared = prepare(&c, &query, &planner, TrieLevels::All).expect("a valid query");
         assert!(prepared.indexes().is_empty());
         let loaded = Nemo::load(&(), &c, &prepared).expect("nothing to load");
-        let Err(error) = Nemo::build(&loaded, &c, &prepared) else {
+        let Err(error) = Nemo::build(&loaded, &prepared) else {
             panic!("a query of checks has no join for Nemo to run");
         };
         assert_eq!(error.engine, "nemo");

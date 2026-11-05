@@ -3,8 +3,9 @@
 //! DuckDB answers the executed query as SQL (see [`sql`](super::sql)) over one
 //! temporary table per index spec, and sits in kermit's phases like this:
 //! - `load` (untimed): an in-memory database with `PRAGMA threads`, a memory
-//!   limit and a private spill directory. Each relation an index reads is
-//!   appended from the catalog as `UBIGINT` columns.
+//!   limit and a private spill directory on disk ([`default_spill_parent`]).
+//!   Each relation an index reads is appended from the catalog as `UBIGINT`
+//!   columns.
 //! - `build` (timed): one `CREATE TEMP TABLE` per spec, holding its filtered,
 //!   projected rows (one copy, and no index), then the join statement prepared.
 //! - `stream`: the prepared statement streamed as Arrow batches, whose rows are
@@ -25,10 +26,11 @@
 
 use {
     super::{
+        indexed_relations,
         sql::{
             column, create_spec_table, join_select, relation_table, relation_table_name, spec_table,
         },
-        Engine, EngineError, Unsupported,
+        Capabilities, Engine, EngineError, EngineKind, Unsupported,
     },
     crate::db::{materialize_count, Catalog, Prepared},
     ::duckdb::{
@@ -43,8 +45,9 @@ use {
     std::{
         cell::{Cell, RefCell},
         fmt::Display,
-        fs,
-        path::PathBuf,
+        fs::{self, File},
+        io,
+        path::{Path, PathBuf},
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -65,18 +68,50 @@ pub struct DuckDbSettings {
     /// DuckDB's `PRAGMA threads`. One thread gives the parallelism of kermit's
     /// joins and serial builds.
     pub threads: usize,
+    /// The directory each connection makes its private spill directory in.
+    /// Default: [`default_spill_parent`], on disk.
+    pub spill_parent: PathBuf,
 }
 
 impl Default for DuckDbSettings {
     fn default() -> Self {
         DuckDbSettings {
             threads: 1,
+            spill_parent: default_spill_parent(),
         }
     }
 }
 
+/// The default [`DuckDbSettings::spill_parent`]: `<platform cache>/kermit/
+/// duckdb.tmp`, beside the benchmark cache, as the JOB generator's raw cache
+/// keeps its own `duckdb.tmp`.
+///
+/// Not the system's temporary directory: where `/tmp` is a tmpfs, as on the
+/// host the sweeps run on, a spill there is memory, charged to the same limit
+/// as the run it was meant to relieve, and a killed run's spill stays resident
+/// until it is deleted by hand. The temporary directory is the fallback only
+/// on a platform with no cache directory.
+pub fn default_spill_parent() -> PathBuf {
+    kermit_bench::cache::base_cache_dir()
+        .ok()
+        .and_then(|benchmarks| benchmarks.parent().map(|kermit| kermit.join("duckdb.tmp")))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// The start of every spill directory's name: `kermit-duckdb-<process
+/// id>-<sequence>`.
+const SPILL_PREFIX: &str = "kermit-duckdb-";
+
+/// The lock file in each spill directory, locked for as long as its guard
+/// lives.
+const LOCK_FILE: &str = "kermit.lock";
+
+/// The name the lock file is locked under before it is renamed to
+/// [`LOCK_FILE`], so that no one finds a live directory's lock file unlocked.
+const STAGED_LOCK_FILE: &str = "kermit.lock.new";
+
 /// One connection's private spill directory, `kermit-duckdb-<process
-/// id>-<sequence>` under the system's temporary directory, removed when the
+/// id>-<sequence>` under [`DuckDbSettings::spill_parent`], removed when the
 /// guard drops.
 ///
 /// DuckDB deletes every spill file in its `temp_directory` when a connection
@@ -84,32 +119,78 @@ impl Default for DuckDbSettings {
 /// other's spills (a run could finish with wrong rows). The process id keeps
 /// two processes apart and the sequence keeps two connections of this process
 /// apart, as the JOB generator's `SpillDir` does for its calls.
+///
+/// A process that is killed outright (earlyoom's SIGKILL) never drops its
+/// guards, so the directory holds a [`LOCK_FILE`], locked while the guard
+/// lives. The OS frees a dead process's locks, so a directory whose lock can be
+/// taken was abandoned, and the next spill directory made beside it removes it
+/// ([`remove_abandoned`]).
 struct SpillDirectory {
     path: PathBuf,
+    /// Held for its lock and never read. It closes, and unlocks, after `drop`
+    /// has removed the directory.
+    _lock: File,
 }
 
 impl SpillDirectory {
-    /// Creates a fresh, empty directory.
-    fn create() -> Result<SpillDirectory, EngineError> {
+    /// Makes a fresh, empty directory under `parent` (and `parent`, if
+    /// missing), first removing whatever spill directories there were
+    /// abandoned.
+    fn create(parent: &Path) -> Result<SpillDirectory, EngineError> {
         static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("kermit-duckdb-{}-{sequence}", std::process::id()));
-        fs::create_dir(&path).map_err(|e| {
-            failure(
-                &format!("creating the spill directory {}", path.display()),
+        Self::create_with(parent, || SEQUENCE.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// [`create`](Self::create), numbering the directory by `next_sequence`.
+    ///
+    /// A name already taken was left by a process with this one's id that has
+    /// since gone (no live process holds this process's id), so it is skipped
+    /// for the next number. It is not deleted here: only a lock that can be
+    /// taken shows that a directory was abandoned.
+    fn create_with(
+        parent: &Path, mut next_sequence: impl FnMut() -> usize,
+    ) -> Result<SpillDirectory, EngineError> {
+        fs::create_dir_all(parent).map_err(|e| {
+            failed(
+                &format!("creating the spill parent {}", parent.display()),
                 e,
             )
         })?;
-        Ok(SpillDirectory {
-            path,
-        })
+        remove_abandoned(parent);
+        let path = loop {
+            let name = format!("{SPILL_PREFIX}{}-{}", std::process::id(), next_sequence());
+            let path = parent.join(name);
+            match fs::create_dir(&path) {
+                | Ok(()) => break path,
+                | Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {},
+                | Err(e) => {
+                    return Err(failed(
+                        &format!("creating the spill directory {}", path.display()),
+                        e,
+                    ));
+                },
+            }
+        };
+        match lock(&path) {
+            | Ok(lock) => Ok(SpillDirectory {
+                path,
+                _lock: lock,
+            }),
+            | Err(e) => {
+                // No guard owns the directory yet, so it is removed here.
+                let _ = fs::remove_dir_all(&path);
+                Err(failed(
+                    &format!("locking the spill directory {}", path.display()),
+                    e,
+                ))
+            },
+        }
     }
 
     /// The path as the text of a SQL statement, which must be valid UTF-8.
     fn text(&self) -> Result<&str, EngineError> {
         self.path.to_str().ok_or_else(|| {
-            refusal(format!(
+            error(format!(
                 "the spill directory {} is not valid UTF-8",
                 self.path.display()
             ))
@@ -119,10 +200,44 @@ impl SpillDirectory {
 
 impl Drop for SpillDirectory {
     fn drop(&mut self) {
-        // Already gone is fine, and a directory left behind in the temporary
-        // directory is harmless: nothing can be done about either from a
-        // destructor.
+        // Already gone is fine, and a directory left behind is removed by the
+        // next spill directory made beside it once this lock is freed: nothing
+        // more can be done from a destructor.
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Locks `directory`'s [`LOCK_FILE`]: under [`STAGED_LOCK_FILE`] first, then
+/// renamed into place, so that [`remove_abandoned`] never finds it unlocked.
+fn lock(directory: &Path) -> io::Result<File> {
+    let staged = directory.join(STAGED_LOCK_FILE);
+    let lock = File::create(&staged)?;
+    lock.lock()?;
+    fs::rename(&staged, directory.join(LOCK_FILE))?;
+    Ok(lock)
+}
+
+/// Removes each spill directory under `parent` whose lock can be taken: its
+/// owner has died. A spill directory with no lock file (one being made) and a
+/// directory of another name are left alone, as is one that fails to go,
+/// which a later run removes.
+fn remove_abandoned(parent: &Path) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let named = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(SPILL_PREFIX));
+        let Ok(lock) = File::open(entry.path().join(LOCK_FILE)) else {
+            continue;
+        };
+        // The lock is held while the directory goes, and freed when `lock`
+        // drops.
+        if named && lock.try_lock().is_ok() {
+            let _ = fs::remove_dir_all(entry.path());
+        }
     }
 }
 
@@ -181,34 +296,16 @@ impl Drop for Tables<'_> {
     }
 }
 
-/// An error of this engine, with the step that failed.
-fn failure(context: &str, source: impl Display) -> EngineError {
-    refusal(format!("{context}: {source}"))
+/// An error of this engine, its message as written.
+fn error(message: impl Display) -> EngineError {
+    EngineError::new(DuckDb::CAPABILITIES.name, message)
 }
 
-/// An error of this engine with its message as written.
-fn refusal(message: String) -> EngineError {
-    EngineError {
-        engine: DuckDb::NAME,
-        message,
-    }
-}
+/// An error of this engine: the step that failed, and DuckDB's own message.
+fn failed(step: &str, source: impl Display) -> EngineError { error(format!("{step}: {source}")) }
 
 /// `text` as a single-quoted SQL string literal.
 fn string_literal(text: &str) -> String { format!("'{}'", text.replace('\'', "''")) }
-
-/// The relations the query's indexes read, each once, in index order. A
-/// relation only an all-constant atom reads is counted from the catalog by
-/// `check_multiplicity`, never by DuckDB.
-fn indexed_relations(prepared: &Prepared) -> Vec<&str> {
-    let mut names: Vec<&str> = Vec::new();
-    for spec in prepared.indexes() {
-        if !names.contains(&spec.relation.as_str()) {
-            names.push(&spec.relation);
-        }
-    }
-    names
-}
 
 /// Creates `relation`'s base table, `UBIGINT` columns `c0…`, and appends the
 /// catalog's rows.
@@ -225,18 +322,18 @@ fn load_relation(
             relation_table(relation),
             columns.join(", ")
         ))
-        .map_err(|e| failure(&context("creating the table of"), e))?;
+        .map_err(|e| failed(&context("creating the table of"), e))?;
     let mut appender = connection
         .appender(&relation_table_name(relation))
-        .map_err(|e| failure(&context("opening an appender on"), e))?;
+        .map_err(|e| failed(&context("opening an appender on"), e))?;
     for row in tuples.rows() {
         appender
             .append_row(appender_params_from_iter(row.iter()))
-            .map_err(|e| failure(&context("loading"), e))?;
+            .map_err(|e| failed(&context("loading"), e))?;
     }
     appender
         .flush()
-        .map_err(|e| failure(&context("flushing"), e))
+        .map_err(|e| failed(&context("flushing"), e))
 }
 
 /// The schema of a join's result: `width` `UInt64` columns.
@@ -253,7 +350,7 @@ fn collect_rows(built: &DuckDbBuilt<'_>) -> Result<Tuples, EngineError> {
     let mut statement = built.statement.borrow_mut();
     let batches = statement
         .stream_arrow([], built.schema.clone())
-        .map_err(|e| failure("running the join", e))?;
+        .map_err(|e| failed("running the join", e))?;
     let mut rows = Tuples::new(built.width);
     let mut row = vec![0usize; built.width];
     for batch in batches {
@@ -284,15 +381,9 @@ impl Engine for DuckDb {
     type Loaded = DuckDbLoaded;
     type Settings = DuckDbSettings;
 
-    const HAS_SPACE: bool = false;
-    const KEEPS_DUPLICATES: bool = true;
-    const MATERIALIZE_MUTATES: bool = false;
-    const NAME: &'static str = "duckdb";
-    const STREAMS: bool = true;
+    const CAPABILITIES: Capabilities = EngineKind::Duckdb.capabilities();
 
-    fn label(settings: &DuckDbSettings) -> String { format!("duckdb-t{}", settings.threads) }
-
-    fn threads(settings: &DuckDbSettings) -> Option<usize> { Some(settings.threads) }
+    fn threads(settings: &DuckDbSettings) -> usize { settings.threads }
 
     fn version(loaded: &DuckDbLoaded) -> String { loaded.version.clone() }
 
@@ -302,14 +393,14 @@ impl Engine for DuckDb {
         settings: &DuckDbSettings, catalog: &Catalog, prepared: &Prepared,
     ) -> Result<DuckDbLoaded, EngineError> {
         if settings.threads == 0 {
-            return Err(refusal("the thread count must be at least 1".to_string()));
+            return Err(error("the thread count must be at least 1".to_string()));
         }
         // Declared before the connection, so that on every return the
         // connection drops first and closes the database before its spill
         // directory is removed.
-        let spill = SpillDirectory::create()?;
-        let connection = Connection::open_in_memory()
-            .map_err(|e| failure("opening an in-memory database", e))?;
+        let spill = SpillDirectory::create(&settings.spill_parent)?;
+        let connection =
+            Connection::open_in_memory().map_err(|e| failed("opening an in-memory database", e))?;
         connection
             .execute_batch(&format!(
                 "PRAGMA threads = {}; SET memory_limit = '{MEMORY_LIMIT}'; SET temp_directory = \
@@ -317,18 +408,18 @@ impl Engine for DuckDb {
                 settings.threads,
                 string_literal(spill.text()?),
             ))
-            .map_err(|e| failure("configuring the connection", e))?;
+            .map_err(|e| failed("configuring the connection", e))?;
         for relation in indexed_relations(prepared) {
             let tuples = catalog
                 .tuples(relation)
-                .ok_or_else(|| refusal(format!("the catalog holds no relation `{relation}`")))?;
+                .ok_or_else(|| error(format!("the catalog holds no relation `{relation}`")))?;
             load_relation(&connection, relation, tuples)?;
         }
         let version = connection
             .query_row("SELECT library_version FROM pragma_version()", [], |row| {
                 row.get::<_, String>(0)
             })
-            .map_err(|e| failure("reading the library version", e))?;
+            .map_err(|e| failed("reading the library version", e))?;
         Ok(DuckDbLoaded {
             connection,
             builds: Cell::new(0),
@@ -338,7 +429,7 @@ impl Engine for DuckDb {
     }
 
     fn build<'l>(
-        loaded: &'l DuckDbLoaded, _catalog: &Catalog, prepared: &Prepared,
+        loaded: &'l DuckDbLoaded, prepared: &Prepared,
     ) -> Result<DuckDbBuilt<'l>, EngineError>
     where
         Self: 'l,
@@ -354,14 +445,14 @@ impl Engine for DuckDb {
             loaded
                 .connection
                 .execute_batch(&create_spec_table(spec, index, build))
-                .map_err(|e| failure(&format!("building the table of index #{index}"), e))?;
+                .map_err(|e| failed(&format!("building the table of index #{index}"), e))?;
         }
         // The last step of the build (decision 11): `stream` then never
         // includes planning.
         let statement = loaded
             .connection
             .prepare(&join_select(prepared, build))
-            .map_err(|e| failure("preparing the join", e))?;
+            .map_err(|e| failed("preparing the join", e))?;
         let width = prepared.assignment_width();
         Ok(DuckDbBuilt {
             statement: RefCell::new(statement),
@@ -375,7 +466,7 @@ impl Engine for DuckDb {
         let mut statement = built.statement.borrow_mut();
         let batches = statement
             .stream_arrow([], built.schema.clone())
-            .map_err(|e| failure("running the join", e))?;
+            .map_err(|e| failed("running the join", e))?;
         Ok(batches.map(|batch| batch.num_rows() as u64).sum())
     }
 
@@ -435,8 +526,18 @@ mod tests {
         prepare(catalog, &query, &planner, TrieLevels::All).expect("a valid query")
     }
 
+    /// Settings on `threads` threads whose spill directories go under the
+    /// system's temporary directory: these tests spill nothing, and their
+    /// directories do not belong in the user's cache.
+    fn settings(threads: usize) -> DuckDbSettings {
+        DuckDbSettings {
+            threads,
+            spill_parent: std::env::temp_dir(),
+        }
+    }
+
     fn load(catalog: &Catalog, prepared: &Prepared) -> DuckDbLoaded {
-        DuckDb::load(&DuckDbSettings::default(), catalog, prepared).expect("DuckDB loads")
+        DuckDb::load(&settings(1), catalog, prepared).expect("DuckDB loads")
     }
 
     /// The value of one of the connection's settings, as text.
@@ -468,19 +569,12 @@ mod tests {
         let catalog = graph();
         let prepared = prepared(&catalog, TRIANGLE);
         assert_eq!(DuckDbSettings::default().threads, 1);
-        assert_eq!(DuckDb::label(&DuckDbSettings::default()), "duckdb-t1");
+        assert_eq!(DuckDb::CAPABILITIES, EngineKind::Duckdb.capabilities());
         assert_eq!(
-            DuckDb::label(&DuckDbSettings {
-                threads: 4
-            }),
-            "duckdb-t4"
+            DuckDb::CAPABILITIES.label(DuckDb::threads(&DuckDbSettings::default())),
+            "duckdb-t1"
         );
-        assert_eq!(
-            DuckDb::threads(&DuckDbSettings {
-                threads: 4
-            }),
-            Some(4)
-        );
+        assert_eq!(DuckDb::threads(&settings(4)), 4);
         assert!(DuckDb::supports(&prepared).is_ok());
     }
 
@@ -488,13 +582,7 @@ mod tests {
     fn a_zero_thread_count_is_refused() {
         let catalog = graph();
         let prepared = prepared(&catalog, TRIANGLE);
-        let Err(error) = DuckDb::load(
-            &DuckDbSettings {
-                threads: 0,
-            },
-            &catalog,
-            &prepared,
-        ) else {
+        let Err(error) = DuckDb::load(&settings(0), &catalog, &prepared) else {
             panic!("a thread count of zero must be refused");
         };
         assert_eq!(error.engine, "duckdb");
@@ -506,7 +594,7 @@ mod tests {
         let with = graph();
         let prepared = prepared(&with, TRIANGLE);
         let without = catalog(vec![("other", 1, vec![vec![1]])]);
-        let Err(error) = DuckDb::load(&DuckDbSettings::default(), &without, &prepared) else {
+        let Err(error) = DuckDb::load(&settings(1), &without, &prepared) else {
             panic!("a catalog without the relation must be refused");
         };
         assert_eq!(error.engine, "duckdb");
@@ -529,9 +617,11 @@ mod tests {
     fn a_connection_gets_its_threads_a_memory_limit_and_a_private_spill_directory() {
         let catalog = graph();
         let prepared = prepared(&catalog, TRIANGLE);
+        let parent = tempfile::tempdir().expect("a scratch directory");
         let loaded = DuckDb::load(
             &DuckDbSettings {
                 threads: 3,
+                spill_parent: parent.path().to_path_buf(),
             },
             &catalog,
             &prepared,
@@ -544,20 +634,107 @@ mod tests {
             memory_limit.starts_with("7.") && memory_limit.ends_with("GiB"),
             "memory_limit is {memory_limit}"
         );
-        let directory = loaded
-            ._spill
-            .path
+        let spill = &loaded._spill.path;
+        assert_eq!(
+            spill.parent(),
+            Some(parent.path()),
+            "under the settings' parent"
+        );
+        let directory = spill
             .file_name()
             .and_then(|name| name.to_str())
-            .expect("a UTF-8 directory name")
-            .to_string();
+            .expect("a UTF-8 directory name");
         assert!(
             directory.starts_with(&format!("kermit-duckdb-{}-", std::process::id())),
             "unexpected spill directory {directory}"
         );
         assert!(
-            setting(&loaded, "temp_directory").contains(&directory),
+            setting(&loaded, "temp_directory").contains(directory),
             "temp_directory does not name {directory}"
+        );
+    }
+
+    /// On disk beside the benchmark cache, as the JOB generator's raw cache
+    /// keeps its own `duckdb.tmp`, and not the system's temporary directory,
+    /// which can be a tmpfs (memory).
+    #[test]
+    fn the_default_spill_parent_is_beside_the_benchmark_cache() {
+        let benchmarks = kermit_bench::cache::base_cache_dir().expect("a platform cache directory");
+        let kermit = benchmarks.parent().expect("the cache has a parent");
+        assert_eq!(
+            DuckDbSettings::default().spill_parent,
+            kermit.join("duckdb.tmp")
+        );
+    }
+
+    /// A spill directory is made under its parent, which is made if missing,
+    /// and its lock is held for as long as the guard lives.
+    #[test]
+    fn a_spill_directory_is_made_under_its_parent_and_holds_its_lock() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let parent = scratch.path().join("cache").join("duckdb.tmp");
+        let spill = SpillDirectory::create(&parent).expect("a spill directory");
+        assert_eq!(spill.path.parent(), Some(parent.as_path()));
+        let lock = File::open(spill.path.join(LOCK_FILE)).expect("the lock file");
+        assert!(lock.try_lock().is_err(), "a live directory's lock is taken");
+        let path = spill.path.clone();
+        drop(spill);
+        assert!(!path.exists(), "the directory outlived its guard");
+    }
+
+    /// A directory whose lock can be taken was left by a process that died
+    /// without removing it (a killed process runs no destructor, but the OS
+    /// frees its locks): the next spill directory made beside it removes it,
+    /// spill files and all.
+    #[test]
+    fn a_spill_directory_its_owner_abandoned_is_removed() {
+        let parent = tempfile::tempdir().expect("a scratch directory");
+        let abandoned = parent.path().join("kermit-duckdb-1-0");
+        fs::create_dir(&abandoned).unwrap();
+        File::create(abandoned.join(LOCK_FILE)).unwrap();
+        fs::write(abandoned.join("duckdb_temp_storage-0.tmp"), b"spill").unwrap();
+        let _spill = SpillDirectory::create(parent.path()).expect("a spill directory");
+        assert!(
+            !abandoned.exists(),
+            "the abandoned directory is still there"
+        );
+    }
+
+    /// A directory whose lock is taken belongs to a live connection (here, one
+    /// of this process's): it is never touched. Nor is a spill directory with
+    /// no lock file yet (one being made), or a directory of another name.
+    #[test]
+    fn a_live_or_unknown_directory_is_kept() {
+        let parent = tempfile::tempdir().expect("a scratch directory");
+        let live = SpillDirectory::create(parent.path()).expect("a spill directory");
+        let being_made = parent.path().join("kermit-duckdb-2-0");
+        fs::create_dir(&being_made).unwrap();
+        let other = parent.path().join("someone-else");
+        fs::create_dir(&other).unwrap();
+        File::create(other.join(LOCK_FILE)).unwrap();
+        let _next = SpillDirectory::create(parent.path()).expect("a second spill directory");
+        assert!(live.path.is_dir(), "the live directory was removed");
+        assert!(being_made.is_dir(), "the directory being made was removed");
+        assert!(other.is_dir(), "another program's directory was removed");
+    }
+
+    /// A name already taken (by a dead process that had this process's id) is
+    /// skipped for the next number, and not deleted: only a lock that can be
+    /// taken shows that a directory was abandoned.
+    #[test]
+    fn a_taken_name_is_skipped_not_deleted() {
+        let parent = tempfile::tempdir().expect("a scratch directory");
+        let name = |sequence: usize| format!("kermit-duckdb-{}-{sequence}", std::process::id());
+        let taken = parent.path().join(name(0));
+        fs::create_dir(&taken).unwrap();
+        fs::write(taken.join("left-behind"), b"").unwrap();
+        let mut sequence = 0..;
+        let spill = SpillDirectory::create_with(parent.path(), || sequence.next().unwrap())
+            .expect("a spill directory");
+        assert_eq!(spill.path, parent.path().join(name(1)));
+        assert!(
+            taken.join("left-behind").exists(),
+            "the taken directory was deleted"
         );
     }
 
@@ -591,7 +768,7 @@ mod tests {
         let catalog = graph();
         let prepared = prepared(&catalog, TRIANGLE);
         let loaded = load(&catalog, &prepared);
-        let built = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
+        let built = DuckDb::build(&loaded, &prepared).expect("DuckDB builds");
         assert_eq!(DuckDb::stream(&built).expect("streams"), 2);
         assert_eq!(
             DuckDb::stream(&built).expect("streams again"),
@@ -629,7 +806,7 @@ mod tests {
         let rows_of = |text: &str| {
             let prepared = prepared(&catalog, text);
             let loaded = load(&catalog, &prepared);
-            let built = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
+            let built = DuckDb::build(&loaded, &prepared).expect("DuckDB builds");
             let mut rows = DuckDb::rows(&built).expect("returns rows");
             rows.sort();
             rows
@@ -662,8 +839,8 @@ mod tests {
         let prepared = prepared(&catalog, TRIANGLE);
         let loaded = load(&catalog, &prepared);
         assert_eq!(spec_tables(&loaded), 0, "loading builds no spec table");
-        let first = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
-        let second = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds again");
+        let first = DuckDb::build(&loaded, &prepared).expect("DuckDB builds");
+        let second = DuckDb::build(&loaded, &prepared).expect("DuckDB builds again");
         assert_eq!(spec_tables(&loaded), 2);
         drop(first);
         assert_eq!(spec_tables(&loaded), 1);

@@ -28,6 +28,7 @@ pub mod measure;
 pub mod run;
 pub mod workload;
 
+use kermit::engine::Capabilities;
 pub use workload::Workload;
 pub(crate) use {
     ds::dispatch_ds_bench,
@@ -60,6 +61,18 @@ impl Metric {
     /// Whether Criterion times this metric. `space` is exact: it is read off
     /// the describe step, never sampled.
     pub(crate) fn is_timed(self) -> bool { !matches!(self, Metric::Space) }
+
+    /// Whether an engine with `capabilities` measures this metric: the one rule
+    /// that an engine cell and the sweep, which plans engine cells without
+    /// their types, both answer by. `iteration` and `end_to_end` need a
+    /// streamed join, and `space` an engine that reports it.
+    pub(crate) fn measured_by(self, capabilities: &Capabilities) -> bool {
+        match self {
+            | Metric::Build | Metric::Materialize => true,
+            | Metric::Iteration | Metric::EndToEnd => capabilities.streams,
+            | Metric::Space => capabilities.has_space,
+        }
+    }
 }
 
 /// The directory name Criterion gives a benchmark id on disk: a copy of the
