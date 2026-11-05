@@ -62,8 +62,9 @@ use {
 /// compares the two, so a move of the pin changes both or fails.
 pub const NEMO_REV: &str = "04f0962b91edc1bbe73e6f65f08d41d1ee491980";
 
-/// The workspace version of `nemo-physical` at [`NEMO_REV`]. Moving the pin
-/// means reading the new revision's version here.
+/// The workspace version of `nemo-physical` at [`NEMO_REV`], as the workspace's
+/// `Cargo.lock` records it. A unit test compares the two, so moving the pin
+/// means updating this too.
 pub const NEMO_PHYSICAL_VERSION: &str = "0.10.2-dev";
 
 /// An error of this engine, its message as written.
@@ -542,6 +543,26 @@ mod tests {
         assert!(
             dependency.contains(&format!("rev = \"{NEMO_REV}\"")),
             "NEMO_REV ({NEMO_REV}) is not the rev of `{dependency}`; move both together"
+        );
+    }
+
+    /// The lockfile's `nemo-physical` entry is the one this build compiled: it
+    /// holds the version `version` reports, from the pinned revision.
+    #[test]
+    fn the_reported_version_is_the_lockfiles() {
+        let lockfile = include_str!("../../../Cargo.lock");
+        let package = lockfile
+            .split("[[package]]")
+            .find(|package| package.contains("\nname = \"nemo-physical\"\n"))
+            .expect("Cargo.lock locks nemo-physical");
+        assert!(
+            package.contains(&format!("\nversion = \"{NEMO_PHYSICAL_VERSION}\"\n")),
+            "NEMO_PHYSICAL_VERSION ({NEMO_PHYSICAL_VERSION}) is not the version Cargo.lock \
+             locks:{package}"
+        );
+        assert!(
+            package.contains(&format!("#{NEMO_REV}\"")),
+            "Cargo.lock does not lock nemo-physical at NEMO_REV ({NEMO_REV}):{package}"
         );
     }
 
