@@ -125,8 +125,11 @@ mod duckdb_cells {
             .unwrap_or_else(|e| panic!("{label}: {e}"));
         let built =
             DuckDb::build(&loaded, &case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
-        let multiplicity =
-            check_multiplicity(&case.catalog, &case.prepared, DuckDb::KEEPS_DUPLICATES);
+        let multiplicity = check_multiplicity(
+            &case.catalog,
+            &case.prepared,
+            DuckDb::CAPABILITIES.keeps_duplicates,
+        );
         check(&built, multiplicity);
     }
 
@@ -290,8 +293,11 @@ mod nemo_cells {
         let loaded = Nemo::load(&(), &case.catalog, &case.prepared)
             .unwrap_or_else(|e| panic!("{label}: {e}"));
         let built = Nemo::build(&loaded, &case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
-        let multiplicity =
-            check_multiplicity(&case.catalog, &case.prepared, Nemo::KEEPS_DUPLICATES);
+        let multiplicity = check_multiplicity(
+            &case.catalog,
+            &case.prepared,
+            Nemo::CAPABILITIES.keeps_duplicates,
+        );
         check(&built, multiplicity);
     }
 
@@ -373,7 +379,7 @@ mod nemo_cells {
         let mut want = oracle::<HashTrieSip>(relations, &full_query(query, &prepared));
         want.dedup();
         Nemo::supports(&prepared).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
-        if check_multiplicity(catalog, &prepared, Nemo::KEEPS_DUPLICATES) == 0 {
+        if check_multiplicity(catalog, &prepared, Nemo::CAPABILITIES.keeps_duplicates) == 0 {
             return (0, Vec::new(), want);
         }
         let loaded = Nemo::load(&(), catalog, &prepared)

@@ -16,7 +16,7 @@
 //!   variable order.
 //! - **`materialize`** (timed, opt-in): `execute_plan` stores the result as a
 //!   deduplicated trie and `count_rows_in_memory` counts it. Nemo stores its
-//!   result, so one build can be materialised once (`MATERIALIZE_MUTATES`).
+//!   result, so one build can be materialised once (`materialize_mutates`).
 //! - **`space`**: Nemo's own `table_size_bytes` over the spec tables, read
 //!   after loading. It leaves out the dictionary entries that keys above
 //!   `i64::MAX` take: Nemo stores those through its dictionary, and
@@ -26,12 +26,12 @@
 //!   `iteration` and `end_to_end` are not offered.
 //!
 //! Nemo has set semantics (its loader and its result trie deduplicate), so
-//! `KEEPS_DUPLICATES` is false. It answers the full conjunctive query, whose
+//! `keeps_duplicates` is false. It answers the full conjunctive query, whose
 //! distinct rows are the same under set and bag semantics. It runs on one
 //! thread and reports no thread count.
 
 use {
-    super::{indexed_relations, Engine, EngineError, Unsupported},
+    super::{indexed_relations, Capabilities, Engine, EngineError, EngineKind, Unsupported},
     crate::db::{Catalog, Prepared},
     kermit_algos::IndexSpec,
     kermit_ds::{Filter, TupleView, Tuples},
@@ -66,12 +66,10 @@ pub const NEMO_REV: &str = "04f0962b91edc1bbe73e6f65f08d41d1ee491980";
 /// means reading the new revision's version here.
 pub const NEMO_PHYSICAL_VERSION: &str = "0.10.2-dev";
 
-/// The engine's name: the report's `system` axis, and the `engine` of its
-/// errors.
-const ENGINE: &str = "nemo";
-
 /// An error of this engine, its message as written.
-fn error(message: impl fmt::Display) -> EngineError { EngineError::new(ENGINE, message) }
+fn error(message: impl fmt::Display) -> EngineError {
+    EngineError::new(Nemo::CAPABILITIES.name, message)
+}
 
 /// Held across every call into `nemo-physical` that times itself.
 ///
@@ -101,7 +99,7 @@ pub struct NemoLoaded {
 /// the join plan that has not run.
 ///
 /// Running the plan changes the database (Nemo stores its result), so a build
-/// can be materialised once, and `Nemo::MATERIALIZE_MUTATES` is true. The
+/// can be materialised once, and its `materialize_mutates` is true. The
 /// database and the plan sit behind `RefCell`s and the outcome in a `Cell`
 /// because `Engine::materialize` and `Engine::rows` take `&Self::Built`.
 pub struct NemoBuilt {
@@ -139,15 +137,9 @@ impl Engine for Nemo {
     type Loaded = NemoLoaded;
     type Settings = ();
 
-    const HAS_SPACE: bool = true;
-    const KEEPS_DUPLICATES: bool = false;
-    const MATERIALIZE_MUTATES: bool = true;
-    const NAME: &'static str = ENGINE;
-    const STREAMS: bool = false;
+    const CAPABILITIES: Capabilities = EngineKind::Nemo.capabilities();
 
-    fn label(_settings: &()) -> String { ENGINE.to_string() }
-
-    fn threads(_settings: &()) -> Option<usize> { None }
+    fn threads(_settings: &()) -> usize { 1 }
 
     fn version(_loaded: &NemoLoaded) -> String {
         format!(
@@ -225,7 +217,7 @@ impl Engine for Nemo {
     /// Nemo's streaming join is private upstream, so there is none to offer.
     fn stream(_built: &NemoBuilt) -> Result<u64, EngineError> {
         Err(error(
-            "Nemo has no streamed join (STREAMS is false); use materialize",
+            "Nemo has no streamed join (its capabilities do not stream); use materialize",
         ))
     }
 
@@ -639,9 +631,9 @@ mod tests {
 
     #[test]
     fn its_labels_and_version_are_fixed() {
-        assert_eq!(Nemo::NAME, "nemo");
-        assert_eq!(Nemo::label(&()), "nemo");
-        assert_eq!(Nemo::threads(&()), None);
+        assert_eq!(Nemo::CAPABILITIES, EngineKind::Nemo.capabilities());
+        assert_eq!(Nemo::CAPABILITIES.label(Nemo::threads(&())), "nemo");
+        assert_eq!(Nemo::threads(&()), 1);
         let loaded = NemoLoaded {
             relations: BTreeMap::new(),
         };

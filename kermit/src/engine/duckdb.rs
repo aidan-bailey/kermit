@@ -29,7 +29,7 @@ use {
         sql::{
             column, create_spec_table, join_select, relation_table, relation_table_name, spec_table,
         },
-        Engine, EngineError, Unsupported,
+        Capabilities, Engine, EngineError, EngineKind, Unsupported,
     },
     crate::db::{materialize_count, Catalog, Prepared},
     ::duckdb::{
@@ -183,7 +183,9 @@ impl Drop for Tables<'_> {
 }
 
 /// An error of this engine, its message as written.
-fn error(message: impl Display) -> EngineError { EngineError::new(DuckDb::NAME, message) }
+fn error(message: impl Display) -> EngineError {
+    EngineError::new(DuckDb::CAPABILITIES.name, message)
+}
 
 /// An error of this engine: the step that failed, and DuckDB's own message.
 fn failed(step: &str, source: impl Display) -> EngineError { error(format!("{step}: {source}")) }
@@ -265,15 +267,9 @@ impl Engine for DuckDb {
     type Loaded = DuckDbLoaded;
     type Settings = DuckDbSettings;
 
-    const HAS_SPACE: bool = false;
-    const KEEPS_DUPLICATES: bool = true;
-    const MATERIALIZE_MUTATES: bool = false;
-    const NAME: &'static str = "duckdb";
-    const STREAMS: bool = true;
+    const CAPABILITIES: Capabilities = EngineKind::Duckdb.capabilities();
 
-    fn label(settings: &DuckDbSettings) -> String { format!("duckdb-t{}", settings.threads) }
-
-    fn threads(settings: &DuckDbSettings) -> Option<usize> { Some(settings.threads) }
+    fn threads(settings: &DuckDbSettings) -> usize { settings.threads }
 
     fn version(loaded: &DuckDbLoaded) -> String { loaded.version.clone() }
 
@@ -449,18 +445,16 @@ mod tests {
         let catalog = graph();
         let prepared = prepared(&catalog, TRIANGLE);
         assert_eq!(DuckDbSettings::default().threads, 1);
-        assert_eq!(DuckDb::label(&DuckDbSettings::default()), "duckdb-t1");
+        assert_eq!(DuckDb::CAPABILITIES, EngineKind::Duckdb.capabilities());
         assert_eq!(
-            DuckDb::label(&DuckDbSettings {
-                threads: 4
-            }),
-            "duckdb-t4"
+            DuckDb::CAPABILITIES.label(DuckDb::threads(&DuckDbSettings::default())),
+            "duckdb-t1"
         );
         assert_eq!(
             DuckDb::threads(&DuckDbSettings {
                 threads: 4
             }),
-            Some(4)
+            4
         );
         assert!(DuckDb::supports(&prepared).is_ok());
     }

@@ -72,14 +72,18 @@ impl<E: Engine + 'static> Subject for EngineSubject<'_, E> {
     /// `stream` does not change the built state; Nemo, which would change it,
     /// has no `stream`.
     const EXERCISE_MUTATES: bool = false;
-    const MATERIALIZE_MUTATES: bool = E::MATERIALIZE_MUTATES;
-    const STREAMS: bool = E::STREAMS;
+    const MATERIALIZE_MUTATES: bool = E::CAPABILITIES.materialize_mutates;
+    const STREAMS: bool = E::CAPABILITIES.streams;
 
     /// One timed build. The all-constant atoms' multiplicity is computed here,
     /// inside the timed body, as `kermit::db::build_with` computes it inside
     /// the timed build of a kermit cell.
     fn build(&self) -> EngineBuilt<'_, E> {
-        let multiplicity = check_multiplicity(self.catalog, self.prepared, E::KEEPS_DUPLICATES);
+        let multiplicity = check_multiplicity(
+            self.catalog,
+            self.prepared,
+            E::CAPABILITIES.keeps_duplicates,
+        );
         let engine = match &self.loaded {
             | Some(loaded) if multiplicity > 0 => {
                 Some(expect_clean(E::build(loaded, self.prepared), "build"))
@@ -108,9 +112,9 @@ impl<E: Engine + 'static> Subject for EngineSubject<'_, E> {
     /// row, `multiplicity` times; a zero multiplicity has none.
     fn exercise(&self, built: &EngineBuilt<'_, E>) -> u64 {
         assert!(
-            E::STREAMS,
+            E::CAPABILITIES.streams,
             "{} does not stream: exercise is only called on a streaming engine",
-            E::NAME
+            E::CAPABILITIES.name
         );
         let multiplicity = u64::try_from(built.multiplicity).unwrap_or(u64::MAX);
         match &built.engine {
@@ -164,7 +168,7 @@ impl<E: Engine + 'static> EngineCell<E> {
         {
             let built = E::build(&loaded, prepared).with_context(context)?;
             if count {
-                if E::STREAMS {
+                if E::CAPABILITIES.streams {
                     E::stream(&built).with_context(context)?;
                 } else {
                     E::materialize(&built).with_context(context)?;
@@ -185,40 +189,44 @@ impl<E: Engine + 'static> Cell for EngineCell<E> {
     /// no `index` lines.
     const PER_INDEX_BYTES: bool = false;
 
-    fn label(&self) -> String { E::label(&self.settings) }
+    fn label(&self) -> String { E::CAPABILITIES.label(E::threads(&self.settings)) }
 
     fn metadata(&self) -> Vec<MetadataLine> {
-        let mut lines = vec![MetadataLine::new("system", E::NAME)];
-        if let Some(threads) = E::threads(&self.settings) {
-            lines.push(MetadataLine::new("engine threads", threads));
+        let mut lines = vec![MetadataLine::new("system", E::CAPABILITIES.name)];
+        if E::CAPABILITIES.threaded {
+            lines.push(MetadataLine::new(
+                "engine threads",
+                E::threads(&self.settings),
+            ));
         }
         lines
     }
 
-    /// `system` and, for an engine with a thread count, `engine_threads`. The
-    /// engine row omits `data_structure`, `algorithm` and every `ds_*` axis;
-    /// `engine_version` comes from the subject ([`Cell::subject_axes`]).
+    /// `system` and, for an engine that takes a thread count,
+    /// `engine_threads`. The engine row omits `data_structure`, `algorithm`
+    /// and every `ds_*` axis; `engine_version` comes from the subject
+    /// ([`Cell::subject_axes`]).
     fn axes(&self) -> BTreeMap<String, serde_json::Value> {
-        let mut axes = BTreeMap::from([("system".to_string(), serde_json::json!(E::NAME))]);
-        if let Some(threads) = E::threads(&self.settings) {
-            axes.insert("engine_threads".to_string(), serde_json::json!(threads));
+        let mut axes = BTreeMap::from([(
+            "system".to_string(),
+            serde_json::json!(E::CAPABILITIES.name),
+        )]);
+        if E::CAPABILITIES.threaded {
+            axes.insert(
+                "engine_threads".to_string(),
+                serde_json::json!(E::threads(&self.settings)),
+            );
         }
         axes
     }
 
-    fn group_segment(&self) -> String { E::label(&self.settings) }
+    fn group_segment(&self) -> String { self.label() }
 
     /// Engines read the flat tuples through filters, so they share the sorted
     /// cells' prepared queries.
     fn trie_levels(&self) -> TrieLevels { TrieLevels::All }
 
-    fn supports(&self, metric: Metric) -> bool {
-        match metric {
-            | Metric::Build | Metric::Materialize => true,
-            | Metric::Iteration | Metric::EndToEnd => E::STREAMS,
-            | Metric::Space => E::HAS_SPACE,
-        }
-    }
+    fn supports(&self, metric: Metric) -> bool { metric.measured_by(&E::CAPABILITIES) }
 
     /// The preflight, untimed: support, then the one load the subject keeps,
     /// then a trial build and, when `count` is true, one count on it
@@ -287,7 +295,7 @@ pub(crate) mod test_support {
     use {
         kermit::{
             db::{Catalog, Prepared},
-            engine::{Engine, EngineError, Unsupported},
+            engine::{Capabilities, Engine, EngineError, Unsupported},
         },
         kermit_ds::Tuples,
     };
@@ -329,15 +337,16 @@ pub(crate) mod test_support {
         type Loaded = ();
         type Settings = ();
 
-        const HAS_SPACE: bool = P;
-        const KEEPS_DUPLICATES: bool = K;
-        const MATERIALIZE_MUTATES: bool = !S;
-        const NAME: &'static str = "fake";
-        const STREAMS: bool = S;
+        const CAPABILITIES: Capabilities = Capabilities {
+            name: "fake",
+            threaded: false,
+            streams: S,
+            keeps_duplicates: K,
+            materialize_mutates: !S,
+            has_space: P,
+        };
 
-        fn label(_: &()) -> String { "fake".to_string() }
-
-        fn threads(_: &()) -> Option<usize> { None }
+        fn threads(_: &()) -> usize { 1 }
 
         fn version(_: &()) -> String { "fake 1.0".to_string() }
 

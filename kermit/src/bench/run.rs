@@ -23,7 +23,7 @@ use {
     anyhow::Context,
     kermit::{
         db::{Catalog, Prepared},
-        engine::Engine,
+        engine::{Engine, EngineKind},
     },
     kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
     kermit_bench::BenchmarkDefinition,
@@ -122,64 +122,49 @@ pub(crate) fn dispatch_sweep_cell(
     }
 }
 
-/// Monomorphises [`run_engine_cell`] over the engine `choice` names. An engine
-/// whose feature this build lacks is refused before any cell runs
-/// (`EngineChoices::resolve`), so its arm here only keeps the match total.
+/// Monomorphises [`run_engine_cell`] over the engine `choice` names: its one
+/// arm per engine. An engine whose feature this build lacks is refused before
+/// any cell runs (`EngineChoices::resolve`), so its feature-less arm only
+/// keeps the match total.
+#[cfg_attr(
+    not(all(feature = "engine-duckdb", feature = "engine-nemo")),
+    allow(unused_variables)
+)]
 fn dispatch_engine_bench(
     choice: crate::options::EngineChoice, workload: &PreparedWorkload, settings: RunSettings<'_>,
     sink: &mut ReportSink,
 ) -> anyhow::Result<()> {
     match choice.engine {
-        | crate::options::EngineSelector::Duckdb => {
-            run_duckdb(choice.threads, workload, settings, sink)
+        | EngineKind::Duckdb => {
+            #[cfg(feature = "engine-duckdb")]
+            {
+                use kermit::engine::duckdb::{DuckDb, DuckDbSettings};
+                let cell = EngineCell::<DuckDb> {
+                    settings: DuckDbSettings {
+                        threads: choice.threads,
+                    },
+                };
+                run_engine_cell(&cell, workload, settings, sink)
+            }
+            #[cfg(not(feature = "engine-duckdb"))]
+            {
+                Err(crate::options::missing_feature(choice.engine))
+            }
         },
-        | crate::options::EngineSelector::Nemo => run_nemo(workload, settings, sink),
+        | EngineKind::Nemo => {
+            #[cfg(feature = "engine-nemo")]
+            {
+                let cell = EngineCell::<kermit::engine::nemo::Nemo> {
+                    settings: (),
+                };
+                run_engine_cell(&cell, workload, settings, sink)
+            }
+            #[cfg(not(feature = "engine-nemo"))]
+            {
+                Err(crate::options::missing_feature(choice.engine))
+            }
+        },
     }
-}
-
-#[cfg(feature = "engine-duckdb")]
-fn run_duckdb(
-    threads: usize, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
-) -> anyhow::Result<()> {
-    run_engine_cell(
-        &EngineCell::<kermit::engine::duckdb::DuckDb> {
-            settings: kermit::engine::duckdb::DuckDbSettings {
-                threads,
-            },
-        },
-        workload,
-        settings,
-        sink,
-    )
-}
-
-#[cfg(not(feature = "engine-duckdb"))]
-fn run_duckdb(
-    _threads: usize, _workload: &PreparedWorkload, _settings: RunSettings<'_>,
-    _sink: &mut ReportSink,
-) -> anyhow::Result<()> {
-    Err(crate::options::EngineSelector::Duckdb.missing_feature())
-}
-
-#[cfg(feature = "engine-nemo")]
-fn run_nemo(
-    workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
-) -> anyhow::Result<()> {
-    run_engine_cell(
-        &EngineCell::<kermit::engine::nemo::Nemo> {
-            settings: (),
-        },
-        workload,
-        settings,
-        sink,
-    )
-}
-
-#[cfg(not(feature = "engine-nemo"))]
-fn run_nemo(
-    _workload: &PreparedWorkload, _settings: RunSettings<'_>, _sink: &mut ReportSink,
-) -> anyhow::Result<()> {
-    Err(crate::options::EngineSelector::Nemo.missing_feature())
 }
 
 /// Runs one engine cell over every query of `workload`: the skip notes for
@@ -980,14 +965,14 @@ mod tests {
 
     fn duckdb(threads: usize) -> SweepCell {
         SweepCell::Engine(crate::options::EngineChoice {
-            engine: crate::options::EngineSelector::Duckdb,
+            engine: EngineKind::Duckdb,
             threads,
         })
     }
 
     fn nemo() -> SweepCell {
         SweepCell::Engine(crate::options::EngineChoice {
-            engine: crate::options::EngineSelector::Nemo,
+            engine: EngineKind::Nemo,
             threads: 1,
         })
     }
@@ -1178,43 +1163,6 @@ mod tests {
         assert_eq!(take_loads(), 2, "one load per query");
     }
 
-    #[cfg(feature = "engine-duckdb")]
-    #[test]
-    fn the_duckdb_choice_supports_what_its_cell_supports() {
-        use {
-            clap::ValueEnum,
-            kermit::engine::duckdb::{DuckDb, DuckDbSettings},
-        };
-        let cell = EngineCell::<DuckDb> {
-            settings: DuckDbSettings {
-                threads: 1,
-            },
-        };
-        for &metric in Metric::value_variants() {
-            assert_eq!(
-                duckdb(1).supports(metric),
-                Cell::supports(&cell, metric),
-                "{metric:?}"
-            );
-        }
-    }
-
-    #[cfg(feature = "engine-nemo")]
-    #[test]
-    fn the_nemo_choice_supports_what_its_cell_supports() {
-        use {clap::ValueEnum, kermit::engine::nemo::Nemo};
-        let cell = EngineCell::<Nemo> {
-            settings: (),
-        };
-        for &metric in Metric::value_variants() {
-            assert_eq!(
-                nemo().supports(metric),
-                Cell::supports(&cell, metric),
-                "{metric:?}"
-            );
-        }
-    }
-
     #[test]
     fn a_cells_trie_levels_follow_its_kind() {
         assert_eq!(nemo().trie_levels(), kermit_ds::TrieLevels::All);
@@ -1236,10 +1184,7 @@ mod tests {
             engine,
             threads: 1,
         };
-        let engines = vec![
-            choice(crate::options::EngineSelector::Duckdb),
-            choice(crate::options::EngineSelector::Nemo),
-        ];
+        let engines = vec![choice(EngineKind::Duckdb), choice(EngineKind::Nemo)];
         let kermit = vec![Execution::for_structure(
             kermit_ds::IndexStructure::TreeTrie,
             DsChoices::default(),
@@ -1269,7 +1214,7 @@ mod tests {
     #[test]
     fn a_ds_flag_needs_a_kermit_cell_to_reach() {
         let engines = vec![crate::options::EngineChoice {
-            engine: crate::options::EngineSelector::Nemo,
+            engine: EngineKind::Nemo,
             threads: 1,
         }];
         let error = sweep_cells(Vec::new(), &[DsFlag::LayoutSeek], engines.clone())
