@@ -1,0 +1,134 @@
+schema = 1                        # flow profile schema version
+
+prefix = "direnv exec . env CARGO_INCREMENTAL=0"          # flake.nix:27 devShells.default (nightly Rust, bubblewrap :34, jdk8 :39, duckdb :43, python313 :44, uv :47, the shellHook's LD_LIBRARY_PATH :67-69), loaded from nix-direnv's cache by the main checkout's untracked .envrc (`use flake`; .git/info/exclude), which a worktree under .loom/worktrees/ finds above it, so a branch that changes flake.nix runs on the main checkout's shell until it merges; with no .envrc above the working directory, direnv runs the command on the host's PATH (stable cargo) without a word. CLAUDE.md:79 names the dev shell and CLAUDE.md:373 requires it for cargo fmt. Not `nix develop --command`: each run leaves a /tmp/nix-shell.* directory behind, and nix-direnv deletes its own (owner, 2026-11-03). CI runs without nix (.github/workflows/pr.yml), and the flake's pinned nightly can lag CI's floating one (CLAUDE.md:374). `env CARGO_INCREMENTAL=0` (flow retro, 2026-11-03): the shared /tb volume filled in 9 of the 12 runs of 2026-10-31 to 11-03, a worktree's target/debug/incremental held 9.7G in the external-engines run, and sccache, the system RUSTC_WRAPPER, caches no incremental build
+
+services = []                     # CLAUDE.md names nothing to start before tests (CLAUDE.md:25); tests that need Java, DuckDB or bwrap find them in the dev shell or skip (kermit/tests/lubm_cardinalities.rs:108-109, kermit-rdf/tests/e2e_watdiv.rs:16-61), each writing into a tempdir
+
+generated = [
+  "benchmarks/watdiv-stress-100-*.yml",   # 6 of the 12 snapshots scripts/watdiv-preprocess/ writes, regenerated with their dictionary and parquet bundle, never edited by hand (CLAUDE.md:347). Not watdiv-stress-*.yml, which would also catch watdiv-stress-default.yml, a hand-written generator YAML
+  "benchmarks/watdiv-stress-1000-*.yml",  # the other 6 (CLAUDE.md:347)
+  "kermit-rdf/vendor/lubm-uba/*.jar",     # vendored LUBM generator, rebuilt only by its REGENERATE.md procedure (CLAUDE.md:107,351)
+  "kermit-rdf/vendor/watdiv/**",          # vendored WatDiv binary and its model files (CLAUDE.md:107)
+  "target/**",                            # build output; gitignored (.gitignore:4)
+  "bench-runs/**",                        # every kermit bench run writes its report here; gitignored (.gitignore:48, CLAUDE.md:329)
+]
+# Not globbed: Cargo.lock, python/kermit-lab/uv.lock and flake.lock, which COMMON_LOCKFILES already matches by name
+# (lib/plan_conformance.py:47).
+
+[gates]
+story = [
+  "cargo fmt --all -- --check",                                        # pr.yml:56 (job rustfmt); nightly rustfmt comes from the prefix (CLAUDE.md:324)
+  "cargo clippy {packages} --all-targets -- -D warnings",              # pr.yml:36,44 (job clippy runs RUSTFLAGS=-Dwarnings); `-- -D warnings` denies the same warnings in the selected packages without changing RUSTFLAGS, which would rebuild everything the test gate shares
+  "cargo test {packages}",                                             # pr.yml:29 (job test); doctests included
+  "bash -c 'RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps {packages}'",  # pr.yml:63-64,71 (job doc); catches broken intra-doc links, which clippy does not (CLAUDE.md:366)
+  "bash -c 'cd python/kermit-lab && uv run --locked --group test pytest -q'",  # pr.yml:87-90 (job python) without KERMIT_BIN, so test_contract.py skips (python/kermit-lab/tests/test_contract.py:23) and the final gate runs it; --locked fails rather than rewrite uv.lock; group from python/kermit-lab/pyproject.toml:17-18
+]
+
+# One command per CI job (.github/workflows/pr.yml:19-92), each run inside the prefix. build.yml runs the same
+# steps on push (build.yml:20-57) and release.yml only tags and publishes. CI's --verbose is dropped: it changes
+# logging only. The python job's `uv sync` gains --locked so the gate cannot rewrite uv.lock.
+final = [
+  "cargo test",                                                                    # job test: pr.yml:19-29; the root manifest is virtual (Cargo.toml:1), so this is every member
+  "bash -c 'RUSTFLAGS=-Dwarnings cargo clippy --all-targets'",                     # job clippy: pr.yml:31-44
+  "cargo fmt --all -- --check",                                                    # job rustfmt: pr.yml:46-56; can pass here and fail in CI when the flake's nightly lags CI's (CLAUDE.md:325: nix flake update rust-overlay)
+  "bash -c 'RUSTFLAGS=-Dwarnings RUSTDOCFLAGS=-Dwarnings cargo doc --workspace'",  # job doc: pr.yml:58-71
+  "bash -c 'cargo build -p kermit && export KERMIT_BIN=\"$PWD/target/debug/kermit\" && cd python/kermit-lab && uv sync --locked --group test && uv run pytest'",  # job python: pr.yml:73-92, with the real-binary contract test
+]
+
+vacuous = [
+  '\b0 passed; 0 failed; \d+ ignored; 0 measured; [1-9]\d* filtered out',  # cargo test: a name filter that matched nothing in a binary; a binary with no tests prints "0 filtered out" and never matches, so unfiltered runs stay clean. A name-filtered cargo test must therefore name its binary (--lib, --test <name>), or every other binary it runs prints this line
+  '^=*\s*\d+ skipped\b',  # pytest: a summary line that starts with "skipped" ran nothing (pytest lists failed and passed first), e.g. a -k selection of test_contract.py without KERMIT_BIN; when pytest collects or selects nothing it exits 5, a FAIL
+]
+
+[build]
+exclusive = ["cargo"]  # one target/ per worktree (.gitignore:4), and this host's earlyoom prefers killing rustc under memory pressure (memory: project_background_job_memory_monitor); the python final gate's cargo build matches by substring, and uv builds nothing (kermit-lab is a pure-Python hatch package, python/kermit-lab/pyproject.toml:20-24)
+
+[landmines]
+markers = [
+  "unsafe {",                    # the workspace has no unsafe; CI dropped Miri on that basis (CLAUDE.md:322)
+  "unsafe impl",                 # same (CLAUDE.md:322)
+  "unsafe fn",                   # same (CLAUDE.md:322)
+  "AtomicU32",                   # ChainLinks' Relaxed links; only kermit-iters/src/chain_links.rs today (CLAUDE.md:162)
+  "OnceCell",                    # interior mutability in a relation; only kermit-ds/src/ds/hash_trie/expansion.rs today (CLAUDE.md:361)
+  "triejoin_open",               # LFTJ's descent; only its own file today (docs/algorithms/leapfrog-triejoin.md:47)
+  "iter_custom(",                # Criterion's custom-measurement loop; only kermit/src/bench/mod.rs today (CLAUDE.md:326)
+  "global_allocator",            # the binary's jemalloc; only kermit/src/main.rs today (CLAUDE.md:327)
+  'features = ["test-hooks"]',   # enabling kermit-ds's test-hooks; only kermit/Cargo.toml:45, the one sanctioned dev-dependency (CLAUDE.md:362)
+  "rand::",                      # the rand crate; nowhere in the workspace today (CLAUDE.md:356)
+  "COPY (",                      # JOB's DuckDB export query; only kermit-generate/src/job/duckdb.rs (CLAUDE.md:357)
+  "temp_directory",              # JOB's per-call DuckDB spill directory; same file (CLAUDE.md:357)
+  "compute_join",                # the entry point that skips validation and the rewrites; only its definition, kermit/src/lib.rs:39 (CLAUDE.md:338)
+  ".bytes()?",                   # a buffered download body; none today, the existing .bytes() calls are ASCII checks (CLAUDE.md:365)
+  "var_name(",                   # the SPARQL variable mapping and its Python mirror; kermit-rdf/src/sparql/ and scripts/watdiv-preprocess/ only (CLAUDE.md:348)
+]
+
+notes = [
+  "Any `unsafe` (a block, `unsafe impl` or `unsafe fn`). The workspace has none, and CI dropped its Miri job on that basis on 2026-10-07, so the first `unsafe` (e.g. #106's tagged pointers) must bring the Miri job back in the same change; until then nothing checks it (CLAUDE.md:322).",
+  "Changing `ChainLinks` (`AtomicU32` links, accessed `Relaxed`). The atomics exist only so a lazy trie can re-thread a child's rows inside `HashTrieIter::open` through `&self`, and `Relaxed` is sound only because every link has exactly one writer, in the parallel builds too. A second writer, or a read that relies on ordering between links, is a race no test reliably catches (CLAUDE.md:162).",
+  "Interior mutability in a relation (`OnceCell`, as lazy expansion uses). A lazy HashTrie's joins build children, so a join changes `heap_size_bytes`: `ExecutionFamily::JOIN_MUTATES` must be `true` for such a family, so that `iteration` and `--verify` run on fresh builds and `space` checks the as-built footprint, or the benchmark silently measures a mutated structure. Statistics reach such a trie through `TupleScan`, never `hash_trie_iter`, which would expand every lazy trie before any join ran (CLAUDE.md:361).",
+  "Editing LFTJ's descent (`triejoin_open`) or a trie iterator's `open`. A failed descent must be atomic: a `triejoin_open` that returned `false` with the depth still incremented dropped answers at depth 3 and below until 2026-09-08, and only real data (`kermit/tests/lubm_cardinalities.rs`) exposed it. LFTJ also calls `open` after `at_end()` on purpose, so the apparent stale stack top in `TreeTrieIter::open` is load-bearing and must not be fixed (docs/algorithms/leapfrog-triejoin.md:47-48; CLAUDE.md:198,224). No marker for `open`: every trie iterator defines one.",
+  "A Criterion `iter_custom` closure that does near-instant work, such as a precomputed `heap_size_bytes()` multiplied by `iters`. Calibration uses wall-clock even for `SpaceMeasurement`, so Criterion ramps `iters` toward `u64::MAX` and the `iters * bytes` arithmetic saturates `usize`; keep at least one O(N) call inside the loop, behind `black_box` (CLAUDE.md:326).",
+  "Changing `#[global_allocator]`. The binary links jemalloc only under `cfg(not(test))`, because its unit tests count allocations through `allocation_counter`'s allocator; the library crates and their tests keep the system allocator, and every report records `allocator`, so a swap changes every timing comparison (CLAUDE.md:327).",
+  "Enabling kermit-ds's `test-hooks` feature from a normal dependency (`features = [\"test-hooks\"]` outside `[dev-dependencies]`). Every benchmarked parallel build would then push onto a thread-local `Vec` that is never drained. Only `kermit`'s dev-dependency enables it, and a new hook goes under `#[cfg(any(test, feature = \"test-hooks\"))]` (CLAUDE.md:362).",
+  "Drawing a generator's data from `rand`. Its `StdRng` and sampling algorithms are not value-stable across versions, so one spec would generate different data after a dependency bump; H2O uses the in-repo SplitMix64 streams of `kermit-generate/src/h2o/rng.rs`, one per (column, step), and golden digests pin its output (CLAUDE.md:356).",
+  "Changing JOB's DuckDB calls (`COPY (...)`, `temp_directory`). `ORDER BY id` in each relation's `COPY` is load-bearing: DuckDB's parallel scan promises no order, and build cost and byte-identical regeneration depend on one. Every call spills into its own `duckdb.tmp/<pid>-<seq>`, because DuckDB deletes every spill file in its directory on exit, so a shared directory corrupts a concurrent call (CLAUDE.md:357).",
+  "Calling `kermit::compute_join`. It calls `join_iter` directly, skipping `validate_query` and the const, placeholder, selection and orientation rewrites, so a query with a constant, a `_` or a repeated variable returns wrong rows or panics. Every other path goes through the `kermit::db` entry points, whose head projection (`&row[..head.len()]`) also relies on validation (CLAUDE.md:338,346).",
+  "Reading a download with `Response::bytes()`. reqwest's blocking timeout (30 s here) then covers the whole body, so a large file fails mid-transfer; stream through `kermit_bench::cache::download_verified` for a digest-pinned file, or the `fetch_checked` core, which write `<dest>.part` and rename it only after the check (CLAUDE.md:365).",
+  "Changing the SPARQL variable mapping (`var_name` in kermit-rdf, mirrored by the Python preprocessor's `_var_name`). The two change together, and the 12 committed WatDiv snapshots are then regenerated, since `scripts/watdiv_stress_sample.py` requires the preprocessor's output to be byte-identical to them; their `c<dict-id>` constants are tied to one run's dictionary, so the YAMLs, `dict.parquet` and the parquet bundle are never mixed across runs (CLAUDE.md:347-348).",
+  "Building an index copy with `project` rather than `build_relation` from the base relation's file-order `(header, tuples)`. `project` rebuilds in the structure's iteration order with a nameless header and drops the build mode, so the copy is not the structure `--ds-config` / `--ds-build` describe. No marker: `project` has legitimate callers (CLAUDE.md:343).",
+  "Iterating a `HashMap` or `HashSet` into a generator's output. Each generation would then get its own dictionary ids, row order and query constants (#74); LUBM's entailment emits the distinct input triples in input order, then the derived ones sorted. No marker: hash maps are common elsewhere (CLAUDE.md:350).",
+  "A second sizing site for a HashTrie table. Roots size through `HashTrieConfig::root_log2_capacity` and children through `build_child_table`, which is how every `--ds-config` value reaches every table; a new site silently ignores the config under configured `ds_config_*` axes (CLAUDE.md:358).",
+]
+
+[review]
+idioms = [
+  "Coverage: a new structure, algorithm, optimiser, Layout alias, Config value or BuildMode runs the 16 standard join patterns under every compatible algorithm and both optimisers (`define_multiway_join_test_suite!` or its `_with_config!` / `_for_build_mode!` forms, plus the `AnyOrders` rows and `kermit/tests/column_orders_any.rs`), with its cells in `kermit/tests/result_allocation.rs` and `kermit/tests/tuple_allocation.rs`; a BuildMode also gets the test that every mode builds an equivalent structure (CLAUDE.md:13,193,207,229).",
+  "A new optimiser is checked on real data too: a row in the `optimisers` vec of `kermit/tests/lubm_cardinalities.rs`, since the breadth suite's 3-5 tuple fixtures cannot expose an executor bug that only some orderings hit (CLAUDE.md:224).",
+  "Implementations read like the paper that defines them: names from the literature and control flow mirroring the published pseudocode; an optimisation that obscures this carries a comment justifying the cost it saves (CLAUDE.md:15).",
+  "Every algorithm, structure and optimiser has its page from the `TEMPLATE.md` of `docs/algorithms/`, `docs/data-structures/` or `docs/optimisers/` (representation or pseudocode, invariants, each trait method's complexity, a worked micro-example), and an optimisation adds an Optimizations subsection to its component's page (CLAUDE.md:17,229).",
+  "Extensions follow the Extending the System recipe exactly (file paths, trait order, CLI wiring, test hooks); a deviation states its justification (CLAUDE.md:19).",
+  "Scope: a story that adds or fixes one algorithm or structure leaves its siblings untouched, because thesis benchmarks compare structures against each other; a bug found in a sibling is filed separately (CLAUDE.md:23).",
+  "An optimisation is classified by the non-user tax (Layout = shape, Config = a value on a path already taken, BuildMode = a process yielding the same shape); a value valid only under another axis's value is rejected without it through the `Prerequisite` table, never implied; every BuildMode builds the same contents and capacities, hence the same `HeapSize` (CLAUDE.md:229,359).",
+  "A change to what a bench metric measures, or to a report field's name or type, bumps `REPORT_SCHEMA_VERSION` and kermit-lab's `SCHEMA_VERSION` together; the cargo test pins only that the two agree, not that a bump was due (CLAUDE.md:329).",
+  "A generator change that alters output under a fixed spec bumps `META_SCHEMA_VERSION` and adds an `OUTDATED_BEFORE` floor, so old caches show as stale instead of passing as hits; H2O's golden digests follow the same rule (CLAUDE.md:352,356).",
+  "Join paths lend each row to the sink as a borrowed slice and never collect, since the `iteration` metric times exactly that path; a new `JoinAlgo` tolerates the rewritten query (`Const_`, `Select_` and `Index_` predicates), validates its `QueryPlan` and emits every variable in canonical order (CLAUDE.md:210).",
+  "Doc comments backtick code-like identifiers, or clippy's `doc_markdown` fails CI. Doc edits in the binary's modules (options.rs, execution.rs, main.rs, bench/) are checked with `cargo rustdoc -p kermit --bin kermit -- --document-private-items -D warnings`, since `cargo doc` documents only the lib; it reported two pre-existing errors on 2026-10-05, and any other error is new (CLAUDE.md:366; memory: project_bin_docs_unlinted).",
+  "Crate boundaries hold: `kermit-rdf` depends on `kermit-bench` only; a generator that writes relations lives in `kermit-generate`, with its runtime dependencies in that crate's manifest, never `kermit`'s; `kermit-algos` takes `kermit-ds` as a dev-dependency only (CLAUDE.md:152,154,355).",
+  "Errors follow each crate's convention (`thiserror` in kermit-bench, hand-written enums with manual `Display`/`Error` in kermit-ds, `anyhow::Result` in the binary); public API boundaries are total functions, and internal panics are reserved for broken invariants (CLAUDE.md:21,337).",
+]
+
+[design]
+registries = [
+  "`kermit-ds/src/ds/mod.rs`: the `IndexStructure` enum and one `mod` / `pub use` per structure (CLAUDE.md:193 step 5).",
+  "`kermit-algos/src/lib.rs`: the `JoinAlgorithm` enum and the flat re-export facade of every algorithm and optimiser (CLAUDE.md:207 step 3, 218 step 3).",
+  "`kermit-algos/src/optimiser/mod.rs`: the `Optimiser` enum with its `instantiate()` and `axis_value()` arms; `axis_values_match_clap_value_names` pins the names (CLAUDE.md:218 step 4).",
+  "`kermit/src/main.rs`: `IndexStructureSelector` and `JoinAlgorithmSelector` with their `expand()` methods, and the `load_query_runner` arms (CLAUDE.md:193 step 6, 207 step 4).",
+  "`kermit/src/execution.rs`: the `Execution` enum and `Execution::for_pair`, the table of the three valid (structure, algorithm) cells, and the `SortedTrieRelation` impls (CLAUDE.md:193 step 6).",
+  "`kermit/src/bench/run.rs`: `dispatch_run_bench`, one arm per cell (CLAUDE.md:207 step 4).",
+  "`kermit/src/bench/ds.rs`: `dispatch_ds_bench`, one arm per structure (CLAUDE.md:193 step 6).",
+  "`kermit/src/options.rs`: `DsFlag::structures` (which structure has which `--ds-*` flag), the `Prerequisite` table, `BuildChoices::STRUCTURES` (a test requires every `IndexStructure` listed) and the `with_hash_trie_layout!` / `with_sorted_trie_layout!` product macros (CLAUDE.md:229 steps 4-5, 360).",
+  "`kermit/tests/join_tests.rs`: one suite invocation per (structure alias, algorithm, optimiser), the `_with_config!` and `_for_build_mode!` cells, and the `AnyOrders` block (CLAUDE.md:13).",
+  "`kermit/tests/column_orders_any.rs`: the list of cells run under `--column-orders any`.",
+  "`kermit/tests/result_allocation.rs`: one cell per (structure, algorithm), pinning zero allocation per result row.",
+  "`kermit/tests/tuple_allocation.rs`: one cell per structure and BuildMode, pinning zero allocation per input row.",
+  "`kermit/tests/cli_query_errors.rs`: every query-error shape on every cell.",
+  "`kermit-ds/tests/hash_trie_tests.rs`: one `hash_trie_test_suite!` invocation per HashTrie Layout alias (CLAUDE.md:333).",
+  "`kermit-ds/tests/common/macros.rs`: `trie_seek_tests!` maps each `ds_layout_seek` value to the seek cost it asserts; any other value panics.",
+  "`kermit/tests/lubm_cardinalities.rs`: the `optimisers` vec, one row per optimiser (`lubm_mini_oracle.rs` iterates `Optimiser::value_variants()` on its own) (CLAUDE.md:224).",
+  "`kermit/src/bench_report.rs`: `REPORT_SCHEMA_VERSION`, pinned by a cargo test to `SCHEMA_VERSION` in `python/kermit-lab/kermit_lab/__init__.py` (CLAUDE.md:329).",
+  "`docs/specs/bench-report-schema.md`: the catalogue of every report key and axis (CLAUDE.md:329).",
+  "`python/kermit-lab/kermit_lab/presets.py`: `AXIS_PHASES`, the metrics each optimisation axis is drawn for.",
+  "`python/kermit-lab/kermit_lab/defaults.py`: `JOIN_AXIS_DEFAULTS`, the value back-filled for an axis on reports that predate it.",
+  "`kermit-rdf/src/generator.rs`: `META_SCHEMA_VERSION` and the per-kind `OUTDATED_BEFORE` floors (CLAUDE.md:352).",
+  "`kermit-bench/src/definition.rs`: the `GeneratorSpec` enum, one variant per generator kind, dispatched by `kermit/src/materialize.rs` and `kermit/src/bench/gen.rs`.",
+  "`benchmarks/README.md`: one row per benchmark and generator kind.",
+  "`docs/benchmarks/README.md`: the comparison table, one column per benchmark kind.",
+  "`kermit-generate/src/job/pins.rs`: the pinned digests of the 114 JOB query files, with a test asserting 33 templates; `docs/benchmarks/JOB.md` states the 33 templates and 465 relation files (CLAUDE.md:357).",
+  "`CLAUDE.md`: the counts it states (9 crates, 16 standard join patterns, 3 valid (structure, algorithm) pairs, the 8 HashTrie Layout aliases) and its Component Reference Docs and Benchmark Reference Docs lists (CLAUDE.md:7,13,160,179).",
+  "`ARCHITECTURE.md`: the per-crate and per-component descriptions.",
+  "`docs/algorithms/`, `docs/data-structures/`, `docs/optimisers/`: one page per component (CLAUDE.md:17).",
+]
+
+[paths]
+state = ""
+records = ""
